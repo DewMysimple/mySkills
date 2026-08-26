@@ -19,9 +19,10 @@ Polish video-course and classroom transcripts produced by Whisper or another spe
 
 - Accept one or more transcript text files, especially Markdown files, and process each file independently.
 - Keep the source file untouched. When the user has not supplied another destination for a local file, write a Markdown copy to a `processed/` directory beside the input, keeping the original filename.
-- Start the output with the transcript itself. Do not add a title, introduction, summary, or processing note that is not already present in the source.
+- For an ordinary transcript without leading metadata, normalize the output to begin with exactly one empty physical line; begin the transcript on the second line. Do not add a generated opening title, introduction, summary, or processing note.
+- If YAML frontmatter or other Markdown metadata must remain at the file start for tooling to recognize it, preserve that metadata first and insert exactly one empty line before the transcript body. Metadata takes priority over the blank-first-line rule.
 - Keep the original language and use that language's normal punctuation, spacing, capitalization, and paragraph conventions.
-- Preserve timestamps, speaker labels, existing headings, code spans/blocks, quotations, and other useful Markdown metadata as close to their original positions as possible. Reflow surrounding prose only when needed for readability.
+- Preserve timestamps, speaker labels, existing headings, code spans/blocks, quotations, and other useful Markdown metadata as close to their original positions as possible. Reflow surrounding prose only when needed for readability. Apply the heading-level rules below to existing headings that are deeper than level two.
 
 ## Conservative transcription correction
 
@@ -47,7 +48,11 @@ Do not swap synonyms, change tense or voice, or smooth an awkward-but-plausible 
 
 ## Light Markdown structure
 
-- Add a short `##` heading only at a clear major topic transition. A heading may concisely describe the passage, but it must not introduce a new fact, argument, conclusion, or interpretation. Do not add one heading for every paragraph.
+- Use headings as sparse navigational markers, not as a summary or outline of the lecture. Do not add a generated heading at the opening; the transcript must begin first after the required leading blank line.
+- Add a generated heading for an independent concept, method phase, or complete case only when multiple signals support a real topic transition, such as changed terminology plus a sustained new subject or an explicit structural turn. A paragraph break alone, a short example, or a minor illustration is not enough.
+- Use only two levels: `#` for a broad topic or classroom phase and `##` for a distinct subtopic under the current `#`. Do not use `##` as a child unless a clear parent `#` exists; if the hierarchy is unclear, omit the generated heading. Do not add `###` or deeper headings.
+- Keep complete cases, demonstrations, and method stages eligible for headings when they are developed as independent sections; do not title one-sentence examples. Build heading text from short phrases already present in the nearby transcript, allowing only small deletions, combinations, or capitalization changes. Never introduce a new fact, conclusion, or interpretation.
+- Preserve existing `#` and `##` headings where possible. Normalize existing `###` and deeper headings to `##` while retaining their wording and position.
 - Convert speech into an ordered list only when the source explicitly presents ordered items, such as “first,” “second,” or “one, two.” Convert into an unordered list only when the source clearly presents separate parallel items. Keep each item faithful to the source and retain its order.
 - Do not manufacture lists from ordinary consecutive sentences. Avoid decorative tables, callouts, bolding, italics, or elaborate Markdown unless they already exist in the source or are necessary to preserve its structure.
 
@@ -56,8 +61,9 @@ Do not swap synonyms, change tense or voice, or smooth an awkward-but-plausible 
 1. Read the entire input and identify its language, existing Markdown structure, timestamps, speakers, and recurring terminology.
 2. Make a conservative internal pass for likely ASR errors. Resolve only high-confidence word-level corrections; preserve ambiguous wording.
 3. Apply minimal punctuation, sentence-boundary, capitalization, and spacing fixes.
-4. Group the unchanged sequence of ideas into topic-coherent paragraphs, then add only justified headings or explicit lists.
-5. Compare the result against the source before saving: confirm that no claims, examples, numbers, dates, names, or meaningful spoken content were omitted, reordered, invented, or turned into a summary.
-6. Save only the clean Markdown output at the requested destination or the default `processed/` destination. Never overwrite the source by default.
+4. Group the unchanged sequence of ideas into topic-coherent paragraphs, then add only justified two-level headings or explicit lists. Keep the opening free of generated headings.
+5. Apply the output wrapper: use exactly one leading blank line for ordinary transcripts, or preserve required leading metadata and place exactly one blank line before the transcript body.
+6. Compare the result against the source before saving: confirm that no claims, examples, numbers, dates, names, or meaningful spoken content were omitted, reordered, invented, or turned into a summary.
+7. Save only the clean Markdown output at the requested destination or the default `processed/` destination. Never overwrite the source by default.
 
 For multiple files, repeat this workflow independently for each file. Do not merge content across files or use a later file to invent content missing from an earlier one.
