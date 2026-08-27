@@ -1,6 +1,6 @@
 ---
 name: video-transcript-polisher
-description: Conservatively polish Whisper or ASR video lecture transcripts into readable Markdown while preserving the original wording, order, and meaning; do not use for summarizing, translating, or rewriting the lecture.
+description: Conservatively polish Whisper or ASR video lecture transcripts into readable Markdown while preserving the original wording, order, and meaning; when explicitly requested, backfill an approved processed copy into a separate Markdown target while preserving its frontmatter; do not use for summarizing, translating, or rewriting the lecture.
 ---
 
 # Video Transcript Polisher
@@ -56,6 +56,39 @@ Do not swap synonyms, change tense or voice, or smooth an awkward-but-plausible 
 - Convert speech into an ordered list only when the source explicitly presents ordered items, such as “first,” “second,” or “one, two.” Convert into an unordered list only when the source clearly presents separate parallel items. Keep each item faithful to the source and retain its order.
 - Do not manufacture lists from ordinary consecutive sentences. Avoid decorative tables, callouts, bolding, italics, or elaborate Markdown unless they already exist in the source or are necessary to preserve its structure.
 
+## Approved-output backfill mode
+
+Use this mode only when the user explicitly asks to replace, backfill, or synchronize an already processed file into a separate Markdown target. This is a controlled file-placement operation, not another transcript-polishing pass.
+
+- Treat the supplied processed file as authoritative. Do not re-run ASR correction, paragraph editing, heading generation, translation, summarization, or any other content transformation during backfill.
+- Establish mappings by exact course identifier, such as `M2-01.md` → `Analysis-M2-01.md`. Do not match by list order or infer mappings from content. Verify that every mapping is one-to-one and that no requested input or target is missing.
+- Before writing anything, run a read-only preflight for the whole batch. In the user's language, report the mappings, file existence, frontmatter presence and boundary, whether each target has an existing body, the old/new body size or hash summary, the replacement scope, and how leading blank lines will be normalized.
+- Require an explicit confirmation after the preflight, even when the user initially said “replace.” Treat an existing target body as an expected replacement case, show it in the preview, and do not overwrite it until confirmation is received. Do not include a full content diff by default; provide one if requested.
+- If any file is missing, duplicated, ambiguously mapped, or has an unclear frontmatter boundary, pause the entire batch and report the issue. Do not perform a partial write.
+- For each target, preserve every byte from the start of the file through the end of its frontmatter closing-delimiter line. Replace only the bytes after that boundary. If frontmatter is absent or malformed, stop rather than reconstructing it.
+- Produce exactly one blank line between the preserved frontmatter and the processed body. Remove only the processed file's leading blank-line wrapper when needed to avoid duplicating that separator; do not alter the body content itself.
+- Do not create `.bak` files by default. After writing, provide a concise audit report listing successful mappings, whether each frontmatter prefix remained unchanged, body write status, exceptions, and final paths.
+- Do not run `git add`, `commit`, `push`, or other repository operations unless the user explicitly requests them.
+
+Use a concise preflight message in the user's language, for example:
+
+```text
+准备回填以下文件：
+
+M2-01.md → Analysis-M2-01.md
+M2-02.md → Analysis-M2-02.md
+
+检查结果：
+- 文件映射：通过
+- frontmatter：完整，将保持不变
+- 旧正文：为空/存在，将在确认后替换
+- 写入范围：仅替换 frontmatter 后的正文
+- 空行处理：frontmatter 后保留一个空行
+- Git 操作：不执行
+
+请确认后开始写入。
+```
+
 ## Required workflow
 
 1. Read the entire input and identify its language, existing Markdown structure, timestamps, speakers, and recurring terminology.
@@ -67,3 +100,5 @@ Do not swap synonyms, change tense or voice, or smooth an awkward-but-plausible 
 7. Save only the clean Markdown output at the requested destination or the default `processed/` destination. Never overwrite the source by default.
 
 For multiple files, repeat this workflow independently for each file. Do not merge content across files or use a later file to invent content missing from an earlier one.
+
+When the user explicitly requests an approved-output backfill, follow the backfill mode above instead of the ordinary processed-output destination behavior.
