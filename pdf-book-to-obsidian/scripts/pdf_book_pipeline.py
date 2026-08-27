@@ -36,16 +36,37 @@ except ImportError:  # pragma: no cover - permits importing as a package.
     from .markdown_tables import transform_definition_lists  # type: ignore
 
 try:
-    from markdown_layout_repair import compact_unordered_list_spacing
+    from markdown_layout_repair import compact_unordered_list_spacing, repair_broken_emphasis
 except ImportError:  # pragma: no cover - permits importing as a package.
-    from .markdown_layout_repair import compact_unordered_list_spacing  # type: ignore
+    from .markdown_layout_repair import compact_unordered_list_spacing, repair_broken_emphasis  # type: ignore
+
+try:
+    from markdown_obsidian import (
+        callout_style as resolve_callout_style,
+        convert_callouts_text,
+        markdown_baseline as resolve_markdown_baseline,
+        render_file_embed,
+        render_note_link,
+    )
+except ImportError:  # pragma: no cover - permits importing as a package.
+    from .markdown_obsidian import (  # type: ignore
+        callout_style as resolve_callout_style,
+        convert_callouts_text,
+        markdown_baseline as resolve_markdown_baseline,
+        render_file_embed,
+        render_note_link,
+    )
 
 
 GENERATOR = "pdf-book-to-obsidian"
-VERSION = "0.2.0"
+VERSION = "0.4.0"
 RESOURCE_DIRS = ("PDF", "Config", "Reports", "Backups", "Attachment")
 DEFAULT_CHAPTER_PATTERN = re.compile(
     r"^chapter\s+(?P<number>[0-9]+|[ivxlcdm]+)\s*[:.\-–—]?\s*(?P<title>.+)$",
+    re.IGNORECASE,
+)
+FIGURE_CAPTION_RE = re.compile(
+    r"^Figure\s+\d+(?:\.\d+)?\s*[–—-]\s*.+$",
     re.IGNORECASE,
 )
 
@@ -379,7 +400,11 @@ def default_config(book: str) -> dict[str, Any]:
             "section_filename": "{title}.md",
             "moc_filename": "MOC - {book}.md",
             "default_part": "00_Book",
+            "markdown_baseline": "obsidian",
             "page_links": "chapter",
+            "source_reference_style": "linked-blockquote",
+            "figure_caption_style": "plain",
+            "image_placement": "pdf-coordinate",
         },
         "table_transform": {"enabled": False, "min_rows": 2},
         "visual_tables": {"enabled": False, "regions": []},
@@ -665,6 +690,33 @@ def relative_link(from_file: Path, target: Path, vault: Path) -> str:
     return Path(relative).as_posix()
 
 
+def source_reference(
+    page_number: int,
+    config: dict[str, Any],
+    *,
+    output_path: Path | None = None,
+    source_path: Path | None = None,
+    vault: Path | None = None,
+) -> str:
+    """Render a source-page reference using the book's selected style.
+
+    The historical linked-blockquote format remains the compatibility default;
+    a book can select a compact plain blockquote without changing extraction.
+    """
+    style = str((config.get("output") or {}).get("source_reference_style") or "linked-blockquote")
+    if style == "none":
+        return ""
+    if style == "plain-blockquote":
+        return f"> Source PDF, p. {page_number}"
+    if style != "linked-blockquote":
+        raise PipelineError(
+            "output.source_reference_style must be linked-blockquote, plain-blockquote, or none"
+        )
+    if output_path is None or source_path is None or vault is None:
+        raise PipelineError("Linked source references require output_path, source_path, and vault")
+    return f"> [Source PDF, p. {page_number}]({relative_link(output_path, source_path, vault)}#page={page_number})"
+
+
 def frontmatter_type(config: dict[str, Any]) -> str:
     return str((config.get("frontmatter") or {}).get("type_field") or "kind")
 
@@ -731,8 +783,8 @@ def extract_images(
     attachment_root: Path,
     book: str,
     link_root: Path | None = None,
-) -> tuple[dict[int, list[tuple[str, bytes]]], list[dict[str, Any]]]:
-    by_page: dict[int, list[tuple[str, bytes]]] = {}
+) -> tuple[dict[int, list[dict[str, Any]]], list[dict[str, Any]]]:
+    by_page: dict[int, list[dict[str, Any]]] = {}
     records: list[dict[str, Any]] = []
     seen: set[tuple[int, int]] = set()
     for chapter in chapters:
@@ -762,14 +814,36 @@ def extract_images(
                         "The configured attachment directory must be inside the Markdown output root "
                         f"so generated links remain portable: {target}"
                     ) from exc
-                by_page.setdefault(page_number, []).append((relative, data))
-                records.append({
+                rects: list[Any] = []
+                try:
+                    rects = list(page.get_image_rects(xref))
+                except Exception:
+                    rects = []
+                if rects:
+                    x0 = min(float(rect.x0) for rect in rects)
+                    y0 = min(float(rect.y0) for rect in rects)
+                    x1 = max(float(rect.x1) for rect in rects)
+                    y1 = max(float(rect.y1) for rect in rects)
+                    placement = "pdf-coordinate"
+                else:
+                    page_height = float(getattr(page.rect, "height", 0.0) or 0.0)
+                    x0, y0, x1, y1 = 0.0, page_height + 1.0, 0.0, page_height + 1.0
+                    placement = "fallback-page-end"
+                item = {
                     "relative_path": relative,
+                    "data": data,
                     "page": page_number,
                     "xref": xref,
+                    "x0": x0,
+                    "y0": y0,
+                    "x1": x1,
+                    "y1": y1,
+                    "placement": placement,
                     "bytes": len(data),
                     "sha256": sha256_bytes(data),
-                })
+                }
+                by_page.setdefault(page_number, []).append(item)
+                records.append({key: value for key, value in item.items() if key != "data"})
     return by_page, records
 
 
@@ -1104,16 +1178,24 @@ def page_markdown_from_spans(
             continue
         line_text = str(entry["text"])
         if entry["heading_level"] and not entry["is_code"]:
-            line_text = f"{'#' * int(entry['heading_level'])} {line_text.strip()}"
+            line_text = f"{'#' * int(entry['heading_level'])} {re.sub(r'[*_`]', '', line_text).strip()}"
         elif entry["is_code"]:
             language = infer_code_language(line_text, config)
             line_text = f"```{language}\n{line_text.rstrip()}\n```"
         elif entry["has_bullet_prefix"] or any(abs(float(entry["y"]) - bullet_y) <= 3.0 for bullet_y in bullet_ys):
-            line_text = "- " + line_text.lstrip()
+            line_text, _ = repair_broken_emphasis("- " + line_text.lstrip())
+        else:
+            line_text, _ = repair_broken_emphasis(line_text)
         rendered.append(line_text)
     joined = "\n\n".join(rendered)
     joined_lines = compact_unordered_list_spacing(joined.splitlines(keepends=True))
-    return normalise_text("".join(joined_lines))
+    page_text = normalise_text("".join(joined_lines))
+    try:
+        selected_callout_style = resolve_callout_style(config)
+    except ValueError as exc:
+        raise PipelineError(str(exc)) from exc
+    page_text, _, _ = convert_callouts_text(page_text, style=selected_callout_style)
+    return page_text
 
 
 def escape_table_cell(value: Any) -> str:
@@ -1354,15 +1436,24 @@ def extract_visual_tables(document: Any, config: dict[str, Any]) -> tuple[list[d
 def render_entry(entry: dict[str, Any], config: dict[str, Any]) -> str:
     line_text = str(entry["text"])
     if entry["heading_level"] and not entry["is_code"]:
-        return f"{'#' * int(entry['heading_level'])} {line_text.strip()}"
+        heading_text = re.sub(r"[*_`]", "", line_text).strip()
+        return f"{'#' * int(entry['heading_level'])} {heading_text}"
     if entry["is_code"]:
         language = infer_code_language(line_text, config)
         return f"```{language}\n{line_text.rstrip()}\n```"
     if entry.get("is_inline_code"):
         return line_text
     if entry["has_bullet_prefix"]:
-        return "- " + line_text.lstrip()
-    return line_text
+        repaired, _ = repair_broken_emphasis("- " + line_text.lstrip())
+        return repaired
+    if FIGURE_CAPTION_RE.match(line_text.strip()):
+        caption_style = str((config.get("output") or {}).get("figure_caption_style") or "plain")
+        if caption_style == "blockquote":
+            return f"> {line_text.strip()}"
+        if caption_style not in {"plain", "blockquote"}:
+            raise PipelineError("output.figure_caption_style must be plain or blockquote")
+    repaired, _ = repair_broken_emphasis(line_text)
+    return repaired
 
 
 def render_page_content(
@@ -1374,6 +1465,7 @@ def render_page_content(
     known_heading_titles: set[str] | None = None,
     skip_regions: list[tuple[float, float]] | None = None,
     table_insertions: list[dict[str, Any]] | None = None,
+    image_insertions: list[dict[str, Any]] | None = None,
     source_link: str | None = None,
 ) -> str:
     blocks = extract_page_blocks(
@@ -1389,7 +1481,14 @@ def render_page_content(
     )
     page_height = float(getattr(page.rect, "height", 0.0) or 0.0)
     bullet_ys = [float(entry["y"]) for entry in blocks if entry["is_bullet_only"]]
-    events = sorted(table_insertions or [], key=lambda item: float(item.get("y", 0.0)))
+    events = sorted(
+        [*(table_insertions or []), *(image_insertions or [])],
+        key=lambda item: (
+            float(item.get("y", 0.0)),
+            float(item.get("x", 0.0)),
+            int(item.get("priority", 0)),
+        ),
+    )
     rendered: list[str] = []
     event_index = 0
     page_link_mode = str((config.get("output") or {}).get("page_links") or "chapter")
@@ -1420,7 +1519,13 @@ def render_page_content(
         event_index += 1
     joined = "\n\n".join(rendered)
     joined_lines = compact_unordered_list_spacing(joined.splitlines(keepends=True))
-    return normalise_text("".join(joined_lines))
+    page_text = normalise_text("".join(joined_lines))
+    try:
+        selected_callout_style = resolve_callout_style(config)
+    except ValueError as exc:
+        raise PipelineError(str(exc)) from exc
+    page_text, _, _ = convert_callouts_text(page_text, style=selected_callout_style)
+    return page_text
 
 
 def merge_adjacent_code_fences(markdown: str) -> str:
@@ -1444,7 +1549,7 @@ def merge_adjacent_code_fences(markdown: str) -> str:
         link_index = closing + 1
         while link_index < len(lines) and not lines[link_index].strip():
             link_index += 1
-        if link_index >= len(lines) or not lines[link_index].startswith("> [Source PDF, p."):
+        if link_index >= len(lines) or not is_source_reference_line(lines[link_index]):
             index = closing + 1
             continue
         next_open = link_index + 1
@@ -1462,6 +1567,15 @@ def merge_adjacent_code_fences(markdown: str) -> str:
     return "\n".join(lines)
 
 
+def is_source_reference_line(line: str) -> bool:
+    return bool(
+        re.match(
+            r"^>\s*(?:\[Source PDF, p\.\s*\d+\]|Source PDF, p\.\s*\d+)",
+            line.strip(),
+        )
+    )
+
+
 def render_pages(
     document: Any,
     title: str,
@@ -1471,7 +1585,7 @@ def render_pages(
     vault: Path,
     output_path: Path,
     config: dict[str, Any],
-    images_by_page: dict[int, list[tuple[str, bytes]]],
+    images_by_page: dict[int, list[dict[str, Any]]],
     visual_tables: list[dict[str, Any]] | None = None,
     visual_skip_regions: dict[int, list[tuple[float, float]]] | None = None,
 ) -> str:
@@ -1484,15 +1598,53 @@ def render_pages(
     events_by_page: dict[int, list[dict[str, Any]]] = {}
     for table in tables:
         if start_page <= int(table["start_page"]) <= end_page:
-            source_link = f"> [Source PDF, p. {table['start_page']}]({relative_link(output_path, source_path, vault)}#page={table['start_page']})"
+            source_link = source_reference(
+                int(table["start_page"]), config,
+                output_path=output_path, source_path=source_path, vault=vault,
+            )
             events_by_page.setdefault(int(table["start_page"]), []).append({
                 "y": float(table.get("y", 0.0)),
+                "x": 0.0,
+                "priority": 1,
                 "markdown": source_link + "\n\n" + str(table["markdown"]),
             })
     lines: list[str] = []
     for page_number in range(start_page, end_page + 1):
         page = document[page_number - 1]
-        source_link = f"> [Source PDF, p. {page_number}]({relative_link(output_path, source_path, vault)}#page={page_number})"
+        source_link = source_reference(
+            page_number, config,
+            output_path=output_path, source_path=source_path, vault=vault,
+        )
+        page_height = float(getattr(page.rect, "height", 0.0) or 0.0)
+        image_placement = str((config.get("output") or {}).get("image_placement") or "pdf-coordinate")
+        if image_placement not in {"pdf-coordinate", "append"}:
+            raise PipelineError("output.image_placement must be pdf-coordinate or append")
+        image_insertions: list[dict[str, Any]] = []
+        for image in sorted(
+            images_by_page.get(page_number, []),
+            key=lambda item: (
+                float(item.get("y0", page_height + 1.0)),
+                float(item.get("x0", 0.0)),
+                int(item.get("xref", 0)),
+            ),
+        ):
+            y = page_height + 1.0 if image_placement == "append" else float(image.get("y0", page_height + 1.0))
+            image_target = relative_link(
+                output_path,
+                vault_path(vault, str(image["relative_path"])),
+                vault,
+            )
+            image_markdown = render_file_embed(
+                str(image["relative_path"]),
+                config,
+                markdown_target=image_target,
+            )
+            image_insertions.append({
+                "y": y,
+                "x": float(image.get("x0", 0.0)),
+                "priority": 0,
+                "markdown": (source_link + "\n\n" if source_link else "") + image_markdown,
+            })
         text = render_page_content(
             page,
             title,
@@ -1501,6 +1653,7 @@ def render_pages(
             known_heading_titles=known_heading_titles,
             skip_regions=(visual_skip_regions or {}).get(page_number, []),
             table_insertions=events_by_page.get(page_number, []),
+            image_insertions=image_insertions,
             source_link=source_link,
         )
         text = apply_line_filters(text, config)
@@ -1510,10 +1663,6 @@ def render_pages(
             lines.extend([source_link, ""])
         if text:
             lines.extend([text, ""])
-        for relative, _ in images_by_page.get(page_number, []):
-            if page_link_mode == "headings-and-code":
-                lines.extend([source_link, ""])
-            lines.extend([f"![[{relative}]]", ""])
     return merge_adjacent_code_fences("\n".join(lines).rstrip()) + "\n"
 
 
@@ -1526,7 +1675,7 @@ def render_chapter(
     vault: Path,
     output_path: Path,
     config: dict[str, Any],
-    images_by_page: dict[int, list[tuple[str, bytes]]],
+    images_by_page: dict[int, list[dict[str, Any]]],
     visual_tables: list[dict[str, Any]] | None = None,
     visual_skip_regions: dict[int, list[tuple[float, float]]] | None = None,
 ) -> str:
@@ -1559,7 +1708,11 @@ def render_chapter(
     )
     header = f"# Chapter {chapter.number}: {chapter.title}"
     if str((config.get("output") or {}).get("page_links") or "chapter") == "headings-and-code":
-        header = f"> [Source PDF, p. {chapter.start_page}]({relative_link(output_path, source_path, vault)}#page={chapter.start_page})\n\n" + header
+        header_reference = source_reference(
+            chapter.start_page, config,
+            output_path=output_path, source_path=source_path, vault=vault,
+        )
+        header = header_reference + "\n\n" + header
     return emit_frontmatter(fields) + header + "\n\n" + body
 
 
@@ -1572,7 +1725,7 @@ def render_section(
     vault: Path,
     output_path: Path,
     config: dict[str, Any],
-    images_by_page: dict[int, list[tuple[str, bytes]]],
+    images_by_page: dict[int, list[dict[str, Any]]],
     visual_tables: list[dict[str, Any]] | None = None,
     visual_skip_regions: dict[int, list[tuple[float, float]]] | None = None,
 ) -> str:
@@ -1604,7 +1757,11 @@ def render_section(
     )
     header = f"# {section.title}"
     if str((config.get("output") or {}).get("page_links") or "chapter") == "headings-and-code":
-        header = f"> [Source PDF, p. {section.start_page}]({relative_link(output_path, source_path, vault)}#page={section.start_page})\n\n" + header
+        header_reference = source_reference(
+            section.start_page, config,
+            output_path=output_path, source_path=source_path, vault=vault,
+        )
+        header = header_reference + "\n\n" + header
     return emit_frontmatter(fields) + header + "\n\n" + body
 
 
@@ -1696,7 +1853,7 @@ def make_moc(
     if paratext:
         lines.extend(["", "## Paratext", ""])
         for section, path, _ in paratext:
-            lines.append(f"- [[{as_posix(path.with_suffix(''))}|{section.title}]]")
+            lines.append(f"- {render_note_link(path, section.title, config)}")
 
     chapter_groups: dict[str, list[tuple[Chapter, Path]]] = {}
     for chapter, path in chapters:
@@ -1705,23 +1862,24 @@ def make_moc(
         lines.extend(["", f"## {part}", ""])
         for section, path, _ in part_overviews:
             if section.part == part:
-                lines.append(f"- [[{as_posix(path.with_suffix(''))}|{section.title}]]")
+                lines.append(f"- {render_note_link(path, section.title, config)}")
         for chapter, path in group:
-            lines.append(f"- [[{as_posix(path.with_suffix(''))}|Chapter {chapter.number}: {chapter.title}]]")
+            label = f"Chapter {chapter.number}: {chapter.title}"
+            lines.append(f"- {render_note_link(path, label, config)}")
 
     if backmatter:
         lines.extend(["", "## Back Matter", ""])
         for section, path, _ in backmatter:
-            lines.append(f"- [[{as_posix(path.with_suffix(''))}|{section.title}]]")
+            lines.append(f"- {render_note_link(path, section.title, config)}")
     if lens_outputs:
         lines.extend(["", "## Lenses", ""])
         for output in lens_outputs:
-            path = Path(output.relative_path).with_suffix("")
-            lines.append(f"- [[{as_posix(path)}]]")
+            path = Path(output.relative_path)
+            lines.append(f"- {render_note_link(path, None, config)}")
     if topic_index is not None:
         lines.extend(["", "## Topic index", ""])
-        path = Path(topic_index.relative_path).with_suffix("")
-        lines.append(f"- [[{as_posix(path)}|Topic and term index]]")
+        path = Path(topic_index.relative_path)
+        lines.append(f"- {render_note_link(path, 'Topic and term index', config)}")
     return OutputFile(relative, ("\n".join(lines).rstrip() + "\n").encode("utf-8"), "moc")
 
 
@@ -1744,7 +1902,7 @@ def make_topic_index(
     lines = [emit_frontmatter(fields).rstrip("\n"), "# Topic and Term Index", ""]
     entries: list[tuple[str, str, str]] = []
     for chapter, path, text in chapters:
-        entries.append((chapter.title.casefold(), chapter.title, as_posix(path.with_suffix(""))))
+        entries.append((chapter.title.casefold(), chapter.title, as_posix(path)))
         for heading in re.findall(r"^#{2,4}\s+(.+?)\s*$", text, re.MULTILINE):
             clean = re.sub(r"\s+#.*$", "", heading).strip()
             if clean:
@@ -1753,14 +1911,14 @@ def make_topic_index(
         for heading in re.findall(r"^#{2,4}\s+(.+?)\s*$", text, re.MULTILINE):
             clean = re.sub(r"\s+#.*$", "", heading).strip()
             if clean:
-                entries.append((clean.casefold(), clean, as_posix(path.with_suffix(""))))
+                entries.append((clean.casefold(), clean, as_posix(path)))
     seen: set[tuple[str, str]] = set()
     for _, title, path in sorted(entries, key=lambda item: (item[0], item[2])):
         identity = (title.casefold(), path)
         if identity in seen:
             continue
         seen.add(identity)
-        lines.append(f"- [[{path}#{title}|{title}]]")
+        lines.append(f"- {render_note_link(path, title, config, fragment=title)}")
     if not seen:
         lines.append("No explicit topic headings were identified.")
     return OutputFile(as_posix(relative), ("\n".join(lines).rstrip() + "\n").encode("utf-8"), "topic-index")
@@ -1780,6 +1938,30 @@ def stages_from_config(config: dict[str, Any], requested: str | None) -> list[st
     if any(stage != "chapterize" for stage in stages) and "chapterize" not in stages:
         stages.insert(0, "chapterize")
     return stages
+
+
+def select_chapters(
+    chapters: list[Chapter], selection: str | None,
+) -> tuple[list[Chapter], list[str] | None]:
+    """Return chapters in source order, optionally restricted by number."""
+    if selection is None:
+        return chapters, None
+    requested = [item.strip() for item in selection.split(",") if item.strip()]
+    if not requested:
+        raise PipelineError("--only-chapters requires one or more chapter numbers")
+    requested_keys = {str(int(item)) if item.isdigit() else item.casefold() for item in requested}
+    selected = [
+        chapter for chapter in chapters
+        if (str(int(chapter.number)) if chapter.number.isdigit() else chapter.number.casefold()) in requested_keys
+    ]
+    found_keys = {
+        str(int(chapter.number)) if chapter.number.isdigit() else chapter.number.casefold()
+        for chapter in selected
+    }
+    missing = [item for item in requested if (str(int(item)) if item.isdigit() else item.casefold()) not in found_keys]
+    if missing:
+        raise PipelineError(f"Requested chapter(s) not found: {', '.join(missing)}")
+    return selected, requested
 
 
 def previous_manifest(vault: Path, book: str, config: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1868,13 +2050,16 @@ def build_outputs(
     source_for_output: Path,
     source_hash: str,
     stages: list[str],
+    only_chapters: str | None = None,
 ) -> tuple[list[OutputFile], dict[str, Any]]:
     pdf = require_pdf_runtime()
     document = pdf.open(str(source))
     try:
         display_book = str(config.get("book_title") or book)
-        chapters = resolve_chapters(document, config)
-        sections = resolve_sections(document, config) if "sections" in stages else []
+        all_chapters = resolve_chapters(document, config)
+        chapters, selected_chapter_numbers = select_chapters(all_chapters, only_chapters)
+        scoped = selected_chapter_numbers is not None
+        sections = resolve_sections(document, config) if "sections" in stages and not scoped else []
         attachment_root = resource_root(vault, "Attachment", book, config)
         try:
             attachment_root.relative_to(vault.resolve())
@@ -1883,7 +2068,7 @@ def build_outputs(
                 "The attachment directory must be inside the Markdown output root "
                 f"for portable generated links: {attachment_root}"
             ) from exc
-        images_by_page: dict[int, list[tuple[str, bytes]]] = {}
+        images_by_page: dict[int, list[dict[str, Any]]] = {}
         image_records: list[dict[str, Any]] = []
         if "attachments" in stages:
             attachment_config = config.get("attachments") or {}
@@ -1977,27 +2162,38 @@ def build_outputs(
         ]
 
         lens_outputs: list[OutputFile] = []
-        if "lens" in stages:
+        if "lens" in stages and not scoped:
             lens_outputs = extract_lens_outputs(chapter_outputs, config, vault, display_book, source_hash)
             outputs.extend(lens_outputs)
 
         if "attachments" in stages:
             for record in image_records:
+                target = vault_path(vault, record["relative_path"])
+                if scoped and target.exists():
+                    # A scoped chapter regeneration must not rewrite an
+                    # existing attachment merely because it was discovered
+                    # while rebuilding the selected pages.
+                    continue
                 match = next(
-                    (data for relative, values in images_by_page.items() for item_relative, data in values if item_relative == record["relative_path"]),
+                    (
+                        item["data"]
+                        for values in images_by_page.values()
+                        for item in values
+                        if item["relative_path"] == record["relative_path"]
+                    ),
                     None,
                 )
                 if match is not None:
                     outputs.append(OutputFile(record["relative_path"], match, "attachment"))
 
         topic_index_output: OutputFile | None = None
-        if "topic_index" in stages:
+        if "topic_index" in stages and not scoped:
             topic_index_output = make_topic_index(
                 display_book, chapter_outputs, section_outputs, config
             )
             outputs.append(topic_index_output)
 
-        if "moc" in stages:
+        if "moc" in stages and not scoped:
             chapter_paths = [(chapter, relative) for chapter, relative, _ in chapter_outputs]
             outputs.append(make_moc(
                 display_book, chapter_paths, section_outputs, lens_outputs,
@@ -2005,6 +2201,11 @@ def build_outputs(
             ))
 
         details = {
+            "scope": {
+                "only_chapters": selected_chapter_numbers,
+                "selected_chapters": [chapter.number for chapter in chapters],
+                "skipped_nonchapter_outputs": scoped,
+            },
             "chapters": [
                 {
                     "number": chapter.number,
@@ -2064,7 +2265,41 @@ def make_backup(
     classifications: list[dict[str, Any]],
     timestamp: str,
     config: dict[str, Any] | None = None,
+    full: bool = False,
 ) -> tuple[Path | None, dict[str, Any]]:
+    if full:
+        backup_root = resource_root(vault, "Backups", book, config)
+        backup_root.mkdir(parents=True, exist_ok=True)
+        backup_path = backup_root / f"pre-{timestamp}.zip"
+        entries: list[dict[str, Any]] = []
+        with zipfile.ZipFile(backup_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for target in sorted(vault.rglob("*")):
+                if not target.is_file() or target.resolve() == backup_path.resolve():
+                    continue
+                relative = vault_relative(vault, target)
+                archive_name = f"files/{relative}"
+                archive.write(target, archive_name)
+                entries.append({
+                    "relative_path": relative,
+                    "archive_path": archive_name,
+                    "previous_sha256": sha256_file(target),
+                    "after_sha256": None,
+                    "kind": "full-backup",
+                })
+            manifest = {
+                "backup_version": 1,
+                "generator": GENERATOR,
+                "generator_version": VERSION,
+                "book": book,
+                "created_at": timestamp,
+                "scope": "full-book",
+                "files": entries,
+                "created_paths": [],
+                "created_after_sha256": {},
+            }
+            archive.writestr("backup-manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+        return backup_path, manifest
+
     changed = [item for item in classifications if item["action"] in {"create", "update"}]
     report_root = resource_root(vault, "Reports", book, config)
     for path in (report_root / "latest-manifest.json", report_root / "latest-report.json"):
@@ -2129,6 +2364,23 @@ def atomic_write(path: Path, data: bytes) -> None:
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+
+
+def merge_manifest_files(
+    previous: dict[str, Any], current: list[dict[str, Any]], scoped: bool,
+) -> list[dict[str, Any]]:
+    """Preserve file records for untouched outputs during a scoped apply."""
+    if not scoped:
+        return current
+    current_by_path = {str(item.get("relative_path")): item for item in current}
+    merged: list[dict[str, Any]] = []
+    for item in previous.get("files", []):
+        if not isinstance(item, dict) or not item.get("relative_path"):
+            continue
+        path = str(item["relative_path"])
+        merged.append(current_by_path.pop(path, item))
+    merged.extend(current_by_path.values())
+    return merged
 
 
 def write_json(path: Path, value: dict[str, Any]) -> None:
@@ -2221,9 +2473,14 @@ def prepare_context(args: argparse.Namespace) -> dict[str, Any]:
                 "reports": ".conversion/reports",
                 "backups": ".conversion/backups",
             },
-        })
+    })
     config = deep_merge(base_config, raw_config)
     config.setdefault("output", {})["root"] = str(vault)
+    try:
+        resolve_markdown_baseline(config)
+        resolve_callout_style(config)
+    except ValueError as exc:
+        raise PipelineError(str(exc)) from exc
     source, managed_target, managed = resolve_source(vault, book, config, getattr(args, "source", None))
     source_info = inspect_pdf(source)
     if source_info["likely_scanned"] and not bool((config.get("ocr") or {}).get("enabled", False)):
@@ -2288,6 +2545,7 @@ def build_dry_run(args: argparse.Namespace) -> dict[str, Any]:
     outputs, details = build_outputs(
         context["vault"], context["book"], context["config"], context["source"],
         source_for_output, context["source_info"]["sha256"], stages,
+        getattr(args, "only_chapters", None),
     )
     classifications = classify_outputs(
         context["vault"], outputs,
@@ -2353,6 +2611,7 @@ def command_apply(args: argparse.Namespace) -> int:
     outputs, details = build_outputs(
         context["vault"], context["book"], context["config"], context["source"],
         source_for_output, context["source_info"]["sha256"], stages,
+        getattr(args, "only_chapters", None),
     )
     adjusted = [adjust_text_line_endings(context["vault"], output) for output in outputs]
     manifest_before = previous_manifest(
@@ -2360,6 +2619,7 @@ def command_apply(args: argparse.Namespace) -> int:
     )
     classifications = classify_outputs(context["vault"], adjusted, manifest_before)
     conflicts = [item for item in classifications if item.get("conflict")]
+    authorized_conflicts: list[dict[str, Any]] = []
     source_classification: dict[str, Any] | None = None
     if not context["managed"] and args.copy_source:
         source_target = context["managed_target"]
@@ -2376,6 +2636,28 @@ def command_apply(args: argparse.Namespace) -> int:
         }
         if source_classification["conflict"]:
             conflicts.append(source_classification)
+    if conflicts and getattr(args, "allow_generated_drift", False):
+        if not getattr(args, "only_chapters", None):
+            raise ConflictError(
+                "--allow-generated-drift is only valid with --only-chapters and cannot authorize a full regeneration."
+            )
+        remaining: list[dict[str, Any]] = []
+        selected_paths = {
+            output.relative_path for output in adjusted if output.kind == "chapter"
+        }
+        for item in conflicts:
+            target = vault_path(context["vault"], str(item.get("relative_path", "")))
+            if (
+                item.get("kind") == "chapter"
+                and item.get("relative_path") in selected_paths
+                and target.exists()
+                and has_generator_marker(target.read_bytes())
+            ):
+                authorized_conflicts.append(item)
+                item["conflict"] = None
+            else:
+                remaining.append(item)
+        conflicts = remaining
     if conflicts:
         raise ConflictError(json.dumps({"conflicts": conflicts}, ensure_ascii=False, indent=2))
 
@@ -2384,7 +2666,8 @@ def command_apply(args: argparse.Namespace) -> int:
     if source_classification:
         backup_classifications.append(source_classification)
     backup_path, backup_manifest = make_backup(
-        context["vault"], context["book"], backup_classifications, timestamp, context["config"]
+        context["vault"], context["book"], backup_classifications, timestamp, context["config"],
+        full=bool(getattr(args, "only_chapters", None)),
     )
     if not context["managed"] and args.copy_source:
         target = context["managed_target"]
@@ -2428,7 +2711,12 @@ def command_apply(args: argparse.Namespace) -> int:
         "source_sha256": context["source_info"]["sha256"],
         "config_sha256": sha256_file(context["config_path"]) if context["config_path"].exists() else None,
         "book_specific_decisions": context["config"].get("book_specific_decisions", []),
-        "files": file_records,
+        "files": merge_manifest_files(
+            manifest_before,
+            file_records,
+            bool(getattr(args, "only_chapters", None)),
+        ),
+        "scope": details.get("scope"),
     }
     report = {
         "mode": "apply",
@@ -2445,6 +2733,7 @@ def command_apply(args: argparse.Namespace) -> int:
         "stages": stages,
         "backup_path": str(backup_path) if backup_path else None,
         "backup_manifest": backup_manifest,
+        "authorized_conflicts": authorized_conflicts,
         "files": file_records,
         "outputs_changed": sum(item["action"] != "unchanged" for item in file_records),
         **details,
@@ -2677,6 +2966,7 @@ def build_parser() -> argparse.ArgumentParser:
     dry_parser = commands.add_parser("dry-run", help="Plan changes without writing the vault")
     add_common(dry_parser)
     dry_parser.add_argument("--stages", help="Comma-separated conversion stages")
+    dry_parser.add_argument("--only-chapters", help="Comma-separated chapter numbers to preview")
     dry_parser.add_argument("--copy-source", action="store_true", help="Plan copying an external source into the configured source directory")
     dry_parser.add_argument("--report-out")
     dry_parser.set_defaults(handler=command_dry_run)
@@ -2684,8 +2974,14 @@ def build_parser() -> argparse.ArgumentParser:
     apply_parser = commands.add_parser("apply", help="Apply an authorized dry-run")
     add_common(apply_parser)
     apply_parser.add_argument("--stages", help="Comma-separated conversion stages")
+    apply_parser.add_argument("--only-chapters", help="Comma-separated chapter numbers to regenerate")
     apply_parser.add_argument("--copy-source", action="store_true", help="Copy an external PDF into the configured source directory before writing")
     apply_parser.add_argument("--confirm-apply", action="store_true", help="Required explicit write confirmation")
+    apply_parser.add_argument(
+        "--allow-generated-drift",
+        action="store_true",
+        help="Authorize replacing selected generated chapter files whose prior hash drifted",
+    )
     apply_parser.set_defaults(handler=command_apply)
 
     audit_parser = commands.add_parser("audit", help="Audit the latest applied manifest")

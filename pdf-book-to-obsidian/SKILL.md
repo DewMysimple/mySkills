@@ -20,6 +20,7 @@ Remember these rules without asking the user to repeat them:
 - Preserve the original PDF and do not overwrite manual files.
 - Low-risk layout cleanup may be automatic; structural or semantic uncertainty requires discussion.
 - After generation, check order, missing content, links, assets, code fences, tables, and overall readability.
+- Treat image placement, source-reference style, and Figure-caption style as book-specific choices. When coordinates are available, coordinate-ordered placement is a strong default for illustrated books, but the Agent must review ambiguous pages.
 
 ## Required Agent workflow
 
@@ -47,12 +48,19 @@ The Agent must not rewrite the whole book. When a region is ambiguous, preserve 
 
 ## Output principles
 
+- Default to Obsidian Flavored Markdown when the user has not requested a
+  cross-platform Markdown result. Read [references/obsidian-markdown-baseline.md](references/obsidian-markdown-baseline.md)
+  for the official syntax sources and the conversion checklist.
 - The destination may be any user-selected directory or an Agent-recommended directory; it need not be an Obsidian vault.
 - At least split the main text by chapter. If a chapter has many meaningful subsections, propose splitting that chapter further and let the user decide.
 - Include front matter, appendices, indexes, and other back matter according to the book-specific plan after inspecting their value.
 - Generate structural links and a topic/term index page. Prefer index links over creating many standalone topic notes unless the user chooses deeper decomposition.
 - Keep images and other assets close enough to the Markdown system for reliable links. Discuss a different asset layout when the book or user's file system calls for it.
 - Keep reports, plans, and rollback data outside the main reading structure or in a clearly separated auxiliary area.
+- Use Obsidian Wiki links, file embeds, tables, code fences, footnotes, and
+  Callouts when the selected baseline and the book-specific plan support them.
+- Do not generate CSS, multi-column layouts, third-party plugin syntax, HTML,
+  or web embeds by default. Treat them as explicit book-specific choices.
 
 ## Safety and maintenance
 
@@ -84,6 +92,11 @@ preserving each original marker. Keep necessary blank lines for code, images,
 tables, blockquotes, nested lists, multi-paragraph items, or ambiguous
 list/paragraph boundaries.
 
+For clear block-leading editorial labels such as `Note`, `Tip`, `Warning`, or
+`Example`, use Obsidian Callouts in the default baseline. Do not convert words
+such as “note” inside ordinary prose. Labels inside lists, tables, or code are
+ambiguous and must remain unchanged for Agent review.
+
 ## Helper scripts
 
 Use `scripts/pdf_book_pipeline.py` for deterministic inspection, preview, generation, auditing, and rollback. The compatibility commands remain available:
@@ -92,8 +105,32 @@ Use `scripts/pdf_book_pipeline.py` for deterministic inspection, preview, genera
 inspect <vault> --book <book> [--source <pdf>]
 dry-run <vault> --book <book> [--stages ...]
 apply <vault> --book <book> --confirm-apply [--copy-source]
+dry-run <vault> --book <book> --only-chapters 1,2
+apply <vault> --book <book> --only-chapters 1,2 --allow-generated-drift --confirm-apply
 audit <vault> --book <book>
 rollback <vault> --book <book> --backup <zip> --confirm-rollback
 ```
 
-For new work, the helper also accepts an explicit PDF and arbitrary output root through `--source` and `--output-root`; the Agent should use that only after the user has selected the destination. Read [references/config-schema.md](references/config-schema.md) for the small internal plan/config contract, [references/output-contract.md](references/output-contract.md) for generated-file expectations, and [references/maintenance-protocol.md](references/maintenance-protocol.md) when updating an existing conversion.
+For new work, the helper also accepts an explicit PDF and arbitrary output root through `--source` and `--output-root`; the Agent should use that only after the user has selected the destination. Read [references/config-schema.md](references/config-schema.md) for the small internal plan/config contract, [references/obsidian-markdown-baseline.md](references/obsidian-markdown-baseline.md) for Obsidian syntax, [references/output-contract.md](references/output-contract.md) for generated-file expectations, and [references/maintenance-protocol.md](references/maintenance-protocol.md) when updating an existing conversion.
+
+For a partial regeneration, use `--only-chapters` only after the user has
+confirmed the scope. The helper skips non-chapter outputs, records the scope,
+and merges the selected file records into the existing manifest. A drifted
+generated chapter may be replaced only with the explicit
+`--allow-generated-drift` flag; this flag cannot authorize a full regeneration
+or a non-generated/manual file.
+
+The generator supports these optional output choices:
+
+- `markdown_baseline`: `obsidian` (default) or `commonmark` for an explicitly
+  cross-platform result;
+- `source_reference_style`: `linked-blockquote` (legacy default),
+  `plain-blockquote`, or `none`;
+- `figure_caption_style`: `plain` or `blockquote`;
+- `image_placement`: `pdf-coordinate` (coordinate-interleaved default) or
+  `append` (legacy compatibility).
+- `callout_style`: `obsidian-callout` (default in Obsidian mode), `plain`, or
+  `none`.
+
+These choices affect presentation only; they do not authorize the Agent or
+the code to invent, translate, summarize, or reorder source content.

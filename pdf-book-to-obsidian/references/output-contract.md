@@ -1,6 +1,11 @@
 # Markdown knowledge-base output contract
 
-The output is a general Markdown file system. Obsidian-compatible links are useful when the destination is an Obsidian vault, but an Obsidian vault is not required.
+The output is a general Markdown file system. The default syntax baseline is
+Obsidian Flavored Markdown because it provides reliable note navigation and
+asset embeds for the primary use case. A book may explicitly select the
+portable `commonmark` baseline when the output must be consumed by other
+Markdown applications. See [obsidian-markdown-baseline.md](obsidian-markdown-baseline.md)
+for the official sources and presentation rules.
 
 ## Required results
 

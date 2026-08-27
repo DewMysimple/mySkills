@@ -38,6 +38,8 @@ Apply only the minimum grammatical or capitalization change needed after a high-
 
 Do not swap synonyms, change tense or voice, or smooth an awkward-but-plausible phrase. Treat a fluent but unusual sentence as part of the source unless there is clear evidence that ASR changed its wording.
 
+Treat proper names, product names, tool names, API names, function names, labels, file names, and code identifiers as high-risk tokens. Do not normalize their casing, separators, or naming style merely because an external standard uses a different form. An external reference may confirm spelling only when the transcript context identifies one unique referent; if multiple referents remain plausible or the audio is still ambiguous, preserve the source wording and mark the issue only in the internal review. Never change pronouns, tense, modality, or an awkward-but-grammatical phrase as a side effect of terminology cleanup.
+
 ## Sentence, paragraph, and speech cleanup
 
 - Restore missing sentence boundaries and punctuation from syntax, cadence, and meaning. Do not create or remove a proposition.
@@ -128,6 +130,27 @@ When the user confirms a multi-agent batch:
 - If a key file, review, mapping, or validation fails, stop the entire batch and do not perform partial formal writes.
 - If delegation is unavailable after confirmation, report the limitation and fall back to the main agent without silently changing the content rules or write scope.
 
+### Agent dispatch ledger and recovery
+
+Before starting a processing wave, create an internal immutable manifest that assigns each course identifier to exactly one processing agent, one candidate path, and one review path. Treat the identifier and paths as reserved until the agent reaches a terminal state; never let the main agent and a subagent write the same candidate concurrently.
+
+- Track each assignment separately as `unassigned`, `pending_init`, `running`, `completed`, `failed`, `shutdown`, `reviewed`, or `main-takeover`. A candidate file's presence is only an artifact signal and never proves that processing completed.
+- Record every spawn result individually. A batch-level error such as a concurrency-limit response does not prove that all spawn calls failed; some calls may have succeeded asynchronously.
+- If any spawn result is missing, contradictory, or reports a capacity error, stop the current wave and reconcile agent statuses and reserved identifiers before doing more processing. Close completed agents before launching another wave.
+- Do not overwrite or recreate a candidate belonging to an agent that is `pending_init`, `running`, or otherwise unresolved. Only after the agent is confirmed `failed`, `shutdown`, or `not_found` may the main agent take over that identifier.
+- After reconciliation, supplement only identifiers that are confirmed unassigned. Do not relaunch an identifier merely because its candidate file is missing or because another call reported an error.
+- Give worker agents an execution-only brief: they must not reopen planning, request user confirmation, broaden the file set, delegate further, or write formal targets. They report completion and self-checks to the main agent only.
+- If an agent stops after producing a candidate, quarantine that candidate for review; do not treat it as complete until the processing status and content review both pass.
+
+### Review timeout and takeover
+
+Assign each candidate to one independent reviewer and track the reviewer status separately from the candidate status. Use bounded waiting rather than waiting indefinitely.
+
+- If a reviewer produces no final report within the bounded wait, send one retry or status request. Do not accept a candidate without a review result.
+- If the reviewer still produces no report after the retry, close the reviewer and perform an equivalent main-agent review. Record the result internally as `main-takeover`; do not add that label or any uncertainty note to the clean transcript.
+- A review `FAIL` requires a targeted candidate correction followed by another review. Do not silently skip a failed file while writing the rest of the batch.
+- Formal writing requires every file to be independently reviewed or explicitly marked `main-takeover` with a passing main-agent review.
+
 ## Approved-output backfill mode
 
 Use this mode only when the user explicitly asks to replace, backfill, or synchronize an already processed file into a separate Markdown target. This is a controlled file-placement operation, not another transcript-polishing pass.
@@ -139,6 +162,7 @@ Use this mode only when the user explicitly asks to replace, backfill, or synchr
 - If any file is missing, duplicated, ambiguously mapped, or has an unclear frontmatter boundary, pause the entire batch and report the issue. Do not perform a partial write.
 - For each target, preserve every byte from the start of the file through the end of its frontmatter closing-delimiter line. Replace only the bytes after that boundary. If frontmatter is absent or malformed, stop rather than reconstructing it.
 - Produce exactly one blank line between the preserved frontmatter and the processed body. Remove only the processed file's leading blank-line wrapper when needed to avoid duplicating that separator; do not alter the body content itself.
+- For byte-sensitive backfill, record source hashes and target frontmatter-prefix hashes before writing. Parse the boundary from the raw bytes or from a decoded prefix whose byte length is explicitly calculated; do not use character indexes as byte offsets. Construct and preflight every expected output before writing any target, then verify after writing that every source hash, frontmatter-prefix hash, and candidate-body byte sequence is unchanged or exactly as expected.
 - Do not create `.bak` files by default. After writing, provide a concise audit report listing successful mappings, whether each frontmatter prefix remained unchanged, body write status, exceptions, and final paths.
 - Do not run `git add`, `commit`, `push`, or other repository operations unless the user explicitly requests them.
 

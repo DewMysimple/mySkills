@@ -14,7 +14,12 @@ output:
   chapter_filename: "Chapter {number:02d} - {title}.md"
   section_filename: "{title}.md"
   moc_filename: "00_MOC.md"
+  markdown_baseline: obsidian
   page_links: headings-and-code
+  source_reference_style: linked-blockquote
+  figure_caption_style: plain
+  image_placement: pdf-coordinate
+  callout_style: obsidian-callout
 
 modules:
   chapterize: true
@@ -33,6 +38,32 @@ book_specific_decisions:
 ```
 
 The actual structure may be richer when a book needs it. Do not add fields merely to expose implementation detail. Paths, file names, chapter ranges, section ranges, page-link style, attachment choices, OCR, and local conversion decisions are selected for the current book.
+
+## Presentation choices
+
+These output fields are optional and are selected per book after inspecting the
+PDF:
+
+- `markdown_baseline`: `obsidian` (default) or `commonmark`. The Obsidian mode
+  permits Wiki links, file embeds, Callouts, and other documented extensions;
+  the CommonMark mode prefers portable Markdown links and images.
+- `source_reference_style`: `linked-blockquote`, `plain-blockquote`, or
+  `none`. The plain form renders as `> Source PDF, p. N`.
+- `figure_caption_style`: `plain` or `blockquote`. Only lines that match a
+  real `Figure N.N – ...` caption are affected; prose mentions are not.
+- `image_placement`: `pdf-coordinate` or `append`. The coordinate mode
+  interleaves image events with text blocks using page coordinates and sorts
+  multiple images by vertical then horizontal position. The append mode is a
+  compatibility fallback for older conversions.
+- `callout_style`: `obsidian-callout` (the default when the baseline is
+  `obsidian`), `plain`, or `none`. Explicit block-leading Note/Tip/Warning and
+  related labels are converted only in the Callout mode.
+
+Use `--only-chapters 1,2` for a confirmed partial generation. It limits writes
+to the selected chapter outputs and preserves the other file records in the
+maintenance manifest. The Agent should use `--allow-generated-drift` only for
+a user-authorized replacement of selected files that still carry the generator
+marker; it is intentionally unavailable as a general overwrite switch.
 
 ## Path rules
 

@@ -18,6 +18,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 from markdown_tables import transform_definition_lists  # noqa: E402
 import markdown_layout_repair as layout_repair  # noqa: E402
 from markdown_layout_repair import repair_text  # noqa: E402
+from markdown_obsidian import convert_callouts_text, render_file_embed, render_note_link  # noqa: E402
 import pdf_book_pipeline as pipeline  # noqa: E402
 
 
@@ -175,6 +176,111 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(uncertain[0]["kind"], "unordered-list-spacing")
         self.assertIn("ambiguous", str(uncertain[0]["reason"]))
 
+    def test_obsidian_callouts_convert_labels_without_touching_prose_or_urls(self) -> None:
+        source = (
+            "**Note** Keep `https://` `example.com/path` unchanged.\n\n"
+            "Note that ordinary prose is not a callout.\n\n"
+            "**Tip** Use the shortcut.\n\n"
+            "**Warning** Save your work first.\n"
+        )
+        transformed, changes, uncertain = convert_callouts_text(source)
+        self.assertIn("> [!NOTE]\n> \n> Keep `https://` `example.com/path` unchanged.", transformed)
+        self.assertIn("Note that ordinary prose is not a callout.", transformed)
+        self.assertIn("> [!TIP]\n> \n> Use the shortcut.", transformed)
+        self.assertIn("> [!WARNING]\n> \n> Save your work first.", transformed)
+        self.assertEqual(len(changes), 3)
+        self.assertFalse(uncertain)
+        repeated, repeated_changes, repeated_uncertain = convert_callouts_text(transformed)
+        self.assertEqual(repeated, transformed)
+        self.assertFalse(repeated_changes)
+        self.assertFalse(repeated_uncertain)
+
+    def test_obsidian_callout_absorbs_continuous_prose_but_stops_at_blocks(self) -> None:
+        source = (
+            "**Note**\n\n"
+            "First paragraph.\n\n"
+            "Second paragraph.\n\n"
+            "## Next section\n\n"
+            "- A list item\n"
+        )
+        transformed, changes, uncertain = convert_callouts_text(source)
+        self.assertIn(
+            "> [!NOTE]\n> \n> First paragraph.\n> \n> Second paragraph.\n\n## Next section",
+            transformed,
+        )
+        self.assertIn("- A list item", transformed)
+        self.assertEqual(len(changes), 1)
+        self.assertFalse(uncertain)
+
+    def test_obsidian_callout_preserves_nested_structures_and_reports_them(self) -> None:
+        source = (
+            "- **Note** A list item note.\n\n"
+            "| **Warning** | Text |\n"
+            "| --- | --- |\n\n"
+            "```text\n"
+            "**Example** stays code\n"
+            "```\n"
+        )
+        transformed, changes, uncertain = convert_callouts_text(source)
+        self.assertEqual(transformed, source)
+        self.assertFalse(changes)
+        self.assertGreaterEqual(len(uncertain), 2)
+
+    def test_repair_and_generation_use_the_same_callout_shape(self) -> None:
+        source = "**Important** Read this first.\n"
+        repaired, changes, uncertain = repair_text(source, "Chapter.md")
+        generated, _, _ = convert_callouts_text(source)
+        self.assertEqual(repaired, generated)
+        self.assertIn("> [!IMPORTANT]", repaired)
+        self.assertTrue(any(change.kind == "callout" for change in changes))
+        self.assertFalse(uncertain)
+
+    def test_pdf_generation_applies_callouts_to_extracted_page_text(self) -> None:
+        class Rect:
+            height = 800.0
+
+        class Page:
+            rect = Rect()
+
+            def get_text(self, mode: str, sort: bool = True) -> dict[str, object]:
+                return {
+                    "blocks": [{
+                        "bbox": (60.0, 100.0, 500.0, 114.0),
+                        "lines": [{
+                            "bbox": (60.0, 100.0, 500.0, 114.0),
+                            "spans": [{
+                                "text": "**Note** Generated page note.",
+                                "bbox": (60.0, 100.0, 500.0, 114.0),
+                                "size": 10,
+                                "font": "Helvetica",
+                            }],
+                        }],
+                    }],
+                }
+
+        markdown = pipeline.render_page_content(
+            Page(),
+            "Chapter 1",
+            {"output": {"page_links": "none", "markdown_baseline": "obsidian"}},
+        )
+        self.assertEqual(markdown, "> [!NOTE]\n> \n> Generated page note.")
+
+    def test_obsidian_and_commonmark_link_baselines(self) -> None:
+        obsidian = {"output": {"markdown_baseline": "obsidian"}}
+        commonmark = {"output": {"markdown_baseline": "commonmark"}}
+        self.assertEqual(
+            render_note_link("Chapters/Chapter 01.md", "Chapter 1", obsidian),
+            "[[Chapters/Chapter 01|Chapter 1]]",
+        )
+        self.assertEqual(
+            render_note_link("Chapters/Chapter 01.md", "Chapter 1", commonmark),
+            "[Chapter 1](Chapters/Chapter%2001.md)",
+        )
+        self.assertEqual(
+            render_file_embed("Assets/Figure 1.png", commonmark, markdown_target="../Assets/Figure 1.png"),
+            "![Figure 1](../Assets/Figure%201.png)",
+        )
+
     def test_pdf_generation_uses_compact_unordered_list_spacing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             pdf_path = Path(temporary) / "list.pdf"
@@ -194,6 +300,72 @@ class PipelineTests(unittest.TestCase):
             finally:
                 document.close()
         self.assertIn("- First generated item\n- Second generated item", markdown)
+
+    def test_coordinate_image_events_keep_page_order_and_styles(self) -> None:
+        class Rect:
+            height = 800.0
+
+        class Page:
+            rect = Rect()
+
+            def get_text(self, mode: str, sort: bool = True) -> dict[str, object]:
+                def block(text: str, y: float) -> dict[str, object]:
+                    return {
+                        "bbox": (60.0, y, 500.0, y + 14.0),
+                        "lines": [{
+                            "bbox": (60.0, y, 500.0, y + 14.0),
+                            "spans": [{"text": text, "bbox": (60.0, y, 500.0, y + 14.0), "size": 10, "font": "Helvetica"}],
+                        }],
+                    }
+
+                return {"blocks": [
+                    block("Top paragraph", 100),
+                    block("Figure 2.7 – VS Build and the Output window", 420),
+                    block("Bottom paragraph", 600),
+                ]}
+
+        class Document:
+            page_count = 1
+
+            def __getitem__(self, index: int) -> Page:
+                return Page()
+
+            def get_toc(self, simple: bool = True) -> list[list[object]]:
+                return []
+
+        config = {
+            "output": {
+                "page_links": "none",
+                "source_reference_style": "plain-blockquote",
+                "figure_caption_style": "blockquote",
+                "image_placement": "pdf-coordinate",
+            }
+        }
+        markdown = pipeline.render_pages(
+            Document(),
+            "Chapter 2",
+            1,
+            1,
+            Path("C:/book/source.pdf"),
+            Path("C:/book"),
+            Path("C:/book/Chapter.md"),
+            config,
+            {1: [{"relative_path": "Assets/Figure-p0001-7.png", "y0": 300, "x0": 20, "xref": 7}]},
+        )
+        self.assertLess(markdown.index("Top paragraph"), markdown.index("![[Assets/Figure-p0001-7.png]]"))
+        self.assertLess(markdown.index("![[Assets/Figure-p0001-7.png]]"), markdown.index("> Figure 2.7"))
+        self.assertLess(markdown.index("> Figure 2.7"), markdown.index("Bottom paragraph"))
+        self.assertEqual(markdown.count("> Source PDF, p. 1"), 1)
+
+    def test_only_chapters_selection_preserves_source_order(self) -> None:
+        chapters = [
+            pipeline.Chapter("1", "One", "Part", 1, 2),
+            pipeline.Chapter("2", "Two", "Part", 3, 4),
+            pipeline.Chapter("3", "Three", "Part", 5, 6),
+        ]
+        selected, requested = pipeline.select_chapters(chapters, "3,1")
+        self.assertEqual([chapter.number for chapter in selected], ["1", "3"])
+        self.assertEqual(requested, ["3", "1"])
 
     def test_layout_repair_baseline_manifest_detects_manual_drift(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -19,6 +19,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
+try:
+    from markdown_obsidian import convert_callouts_text
+except ImportError:  # pragma: no cover - permits importing as a package.
+    from .markdown_obsidian import convert_callouts_text  # type: ignore
+
 
 SOURCE_RE = re.compile(
     r"^\s*>\s*\[Source PDF, p\.\s*(?P<page>\d+)\]\((?P<url>.+)\)\s*$"
@@ -536,7 +541,12 @@ def collapse_excess_blank_lines(lines: list[str], changes: list[Change]) -> list
     return result
 
 
-def repair_text(text: str, relative_path: str) -> tuple[str, list[Change], list[dict[str, object]]]:
+def repair_text(
+    text: str,
+    relative_path: str,
+    *,
+    callout_style: str = "obsidian-callout",
+) -> tuple[str, list[Change], list[dict[str, object]]]:
     frontmatter, body = split_frontmatter(text)
     newline = "\r\n" if "\r\n" in body else "\n"
     lines = body.splitlines(keepends=True)
@@ -586,6 +596,22 @@ def repair_text(text: str, relative_path: str) -> tuple[str, list[Change], list[
             )
             lines[index] = repaired
 
+    callout_text, callout_changes, callout_uncertain = convert_callouts_text(
+        "".join(lines),
+        style=callout_style,
+        line_offset=frontmatter.count("\n"),
+    )
+    for item in callout_changes:
+        changes.append(
+            Change(
+                kind=str(item["kind"]),
+                line=int(item["line"]),
+                before=str(item["before"]),
+                after=str(item["after"]),
+            )
+        )
+    uncertain.extend(callout_uncertain)
+    lines = callout_text.splitlines(keepends=True)
     lines = repair_figure_sources(lines, changes, uncertain)
     lines = repair_ordered_list_spacing(lines, changes)
     lines = compact_unordered_list_spacing(
@@ -605,13 +631,17 @@ def read_text_bytes(path: Path) -> tuple[bytes, str]:
     return raw, raw.decode(encoding)
 
 
-def preview(root: Path) -> dict[str, object]:
+def preview(root: Path, *, callout_style: str = "obsidian-callout") -> dict[str, object]:
     files: list[dict[str, object]] = []
     total_changes = 0
     total_uncertain = 0
     for path in markdown_files(root):
         raw, text = read_text_bytes(path)
-        repaired, changes, uncertain = repair_text(text, str(path.relative_to(root)))
+        repaired, changes, uncertain = repair_text(
+            text,
+            str(path.relative_to(root)),
+            callout_style=callout_style,
+        )
         repaired_raw = repaired.encode("utf-8-sig" if raw.startswith(b"\xef\xbb\xbf") else "utf-8")
         relative = str(path.relative_to(root)).replace("\\", "/")
         item = FileRepair(
@@ -636,8 +666,9 @@ def preview(root: Path) -> dict[str, object]:
         total_uncertain += len(uncertain)
     return {
         "tool": "pdf-book-to-obsidian markdown layout repair",
-        "version": "0.1.0",
+        "version": "0.2.0",
         "book_root": str(root),
+        "callout_style": callout_style,
         "files_scanned": len(files),
         "files_changed": sum(1 for item in files if item["changed"]),
         "changes": total_changes,
@@ -722,7 +753,11 @@ def apply_repairs(root: Path, report: dict[str, object], backup: Path) -> dict[s
         expected = str(item["original_sha256"])
         if sha256_bytes(raw) != expected:
             raise RuntimeError(f"Source changed after preview: {path}")
-        repaired, _, _ = repair_text(text, str(item["relative_path"]))
+        repaired, _, _ = repair_text(
+            text,
+            str(item["relative_path"]),
+            callout_style=str(report.get("callout_style") or "obsidian-callout"),
+        )
         encoded = repaired.encode("utf-8-sig" if raw.startswith(b"\xef\xbb\xbf") else "utf-8")
         path.write_bytes(encoded)
         changed_files.append(str(item["relative_path"]))
@@ -742,6 +777,12 @@ def build_parser() -> argparse.ArgumentParser:
         sub.add_argument("--book-root", required=True, type=Path)
         sub.add_argument("--report", required=True, type=Path)
         sub.add_argument(
+            "--callout-style",
+            choices=("obsidian-callout", "plain", "none"),
+            default="obsidian-callout",
+            help="presentation style for explicit editorial callout labels",
+        )
+        sub.add_argument(
             "--baseline-manifest",
             type=Path,
             help="optional prior generator manifest used to detect manual file drift",
@@ -758,7 +799,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     if not root.is_dir():
         print(f"Book root does not exist: {root}", file=sys.stderr)
         return 2
-    report = preview(root)
+    report = preview(root, callout_style=args.callout_style)
     if args.baseline_manifest is not None:
         baseline_path = args.baseline_manifest.resolve()
         if not baseline_path.is_file():
