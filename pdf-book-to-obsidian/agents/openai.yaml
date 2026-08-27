@@ -1,0 +1,4 @@
+interface:
+  display_name: "PDF Book to Obsidian"
+  short_description: "Convert PDF books into safe Obsidian Markdown libraries"
+  default_prompt: "Use $pdf-book-to-obsidian to inspect and safely convert a PDF book into an Obsidian Markdown library."
