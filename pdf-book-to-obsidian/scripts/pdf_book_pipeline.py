@@ -826,6 +826,20 @@ def toc_heading_index(document: Any) -> dict[int, dict[str, int]]:
     return index
 
 
+def toc_heading_titles(document: Any) -> set[str]:
+    titles: set[str] = set()
+    try:
+        toc = document.get_toc(simple=True)
+    except Exception:
+        toc = []
+    for row in toc or []:
+        if len(row) >= 2 and int(row[0]) <= 3:
+            title = normalise_heading_text(row[1])
+            if title:
+                titles.add(normalise_heading_lookup(title))
+    return titles
+
+
 def is_list_marker(text: str) -> bool:
     return bool(re.match(rf"^\s*(?:[-*+]\s+|[{re.escape(BULLET_CHARS)}](?:\s|\t|$))", text))
 
@@ -853,6 +867,7 @@ def extract_page_blocks(
     inline_code_enabled: bool = True,
     code_min_lines: int = 2,
     code_min_chars: int = 60,
+    known_heading_titles: set[str] | None = None,
     skip_regions: list[tuple[float, float]] | None = None,
 ) -> list[dict[str, Any]]:
     blocks = page.get_text("dict", sort=True).get("blocks", [])
@@ -949,6 +964,15 @@ def extract_page_blocks(
                 "heading_level": heading_level,
             })
     entries.sort(key=lambda item: (item["y"], item["x"], item["index"]))
+    known_heading_titles = set(known_heading_titles or set())
+    if chapter_title:
+        known_heading_titles.add(normalise_heading_lookup(chapter_title))
+    for entry in entries:
+        plain = normalise_heading_text(str(entry["plain"]))
+        running_match = re.match(r"^(?P<title>.+?)\s+[0-9]+$", plain)
+        if float(entry["y"]) < 60.0 and running_match:
+            if normalise_heading_lookup(running_match.group("title")) in known_heading_titles:
+                entry["is_running_header"] = True
     if code_enabled:
         merged_entries: list[dict[str, Any]] = []
         for entry in entries:
@@ -1028,6 +1052,8 @@ def page_markdown_from_spans(
     bullet_ys = [float(entry["y"]) for entry in blocks if entry["is_bullet_only"]]
     for entry in blocks:
         if entry["is_bullet_only"]:
+            continue
+        if entry.get("is_running_header"):
             continue
         if entry.get("is_chapter_title"):
             continue
@@ -1304,6 +1330,7 @@ def render_page_content(
     config: dict[str, Any],
     *,
     heading_levels: dict[str, int] | None = None,
+    known_heading_titles: set[str] | None = None,
     skip_regions: list[tuple[float, float]] | None = None,
     table_insertions: list[dict[str, Any]] | None = None,
     source_link: str | None = None,
@@ -1316,6 +1343,7 @@ def render_page_content(
         inline_code_enabled=bool((config.get("code_blocks") or {}).get("inline", True)),
         code_min_lines=int((config.get("code_blocks") or {}).get("min_lines", 2)),
         code_min_chars=int((config.get("code_blocks") or {}).get("min_chars", 60)),
+        known_heading_titles=known_heading_titles,
         skip_regions=skip_regions,
     )
     page_height = float(getattr(page.rect, "height", 0.0) or 0.0)
@@ -1329,6 +1357,8 @@ def render_page_content(
             rendered.append(str(events[event_index]["markdown"]))
             event_index += 1
         if entry["is_bullet_only"]:
+            continue
+        if entry.get("is_running_header"):
             continue
         if entry.get("is_chapter_title"):
             continue
@@ -1406,6 +1436,7 @@ def render_pages(
     if page_link_mode not in {"chapter", "every-page", "headings-and-code", "none"}:
         raise PipelineError("output.page_links must be chapter, every-page, headings-and-code, or none")
     heading_index = toc_heading_index(document)
+    known_heading_titles = toc_heading_titles(document)
     tables = [table for table in (visual_tables or []) if table.get("status") == "converted"]
     events_by_page: dict[int, list[dict[str, Any]]] = {}
     for table in tables:
@@ -1424,6 +1455,7 @@ def render_pages(
             title,
             config,
             heading_levels=heading_index.get(page_number, {}),
+            known_heading_titles=known_heading_titles,
             skip_regions=(visual_skip_regions or {}).get(page_number, []),
             table_insertions=events_by_page.get(page_number, []),
             source_link=source_link,
