@@ -7,6 +7,7 @@ import json
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 from reportlab.pdfgen import canvas
@@ -15,6 +16,8 @@ SCRIPT_DIR = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from markdown_tables import transform_definition_lists  # noqa: E402
+import markdown_layout_repair as layout_repair  # noqa: E402
+from markdown_layout_repair import repair_text  # noqa: E402
 import pdf_book_pipeline as pipeline  # noqa: E402
 
 
@@ -48,6 +51,170 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("- **Only one**—This must remain a list.", transformed)
         self.assertEqual(audit["tables_count"], 1)
         self.assertEqual(audit["rows_transformed"], 2)
+
+    def test_layout_repair_keeps_intentional_emphasis_and_cleans_split_spans(self) -> None:
+        source = (
+            "### **What is the difference between C++ programming and C++ ** **scripting?**\n"
+            "The **Operator** **Operation** labels remain separate.\n"
+            "The **Desktop ** **development with C++ **group is one phrase.\n"
+            "- ** ****C++ profiling tools**\n"
+            "1. First step\n\n2. Second step\n\n3. Third step\n"
+        )
+        transformed, changes, uncertain = repair_text(source, "Chapter.md")
+        self.assertIn("### What is the difference between C++ programming and C++ scripting?", transformed)
+        self.assertIn("The **Operator** **Operation** labels remain separate.", transformed)
+        self.assertIn("The **Desktop development with C++** group is one phrase.", transformed)
+        self.assertIn("- **C++ profiling tools**", transformed)
+        self.assertIn("1. First step\n2. Second step\n3. Third step", transformed)
+        self.assertFalse(uncertain)
+        self.assertGreaterEqual(sum(change.kind == "broken-emphasis" for change in changes), 2)
+
+    def test_layout_repair_moves_figure_source_to_caption(self) -> None:
+        source = (
+            "A paragraph.\n\n"
+            "> [Source PDF, p. 37](book.pdf#page=37)\n\n"
+            "![[Figure-p0037-777.jpeg]]\n\n"
+            "> Figure 1.14 – Adding a new C++ class from the Character class\n"
+        )
+        transformed, changes, uncertain = repair_text(source, "Chapter.md")
+        self.assertNotIn("> [Source PDF, p. 37]", transformed)
+        self.assertIn("![[Figure-p0037-777.jpeg]]\n\nFigure 1.14 – Adding a new C++ class from the Character class ([Source PDF, p. 37](book.pdf#page=37))", transformed)
+        self.assertTrue(any(change.kind == "figure-source-to-caption" for change in changes))
+        self.assertTrue(any(change.kind == "figure-caption" for change in changes))
+        self.assertFalse(uncertain)
+
+    def test_layout_repair_inserts_figure_caption_separator(self) -> None:
+        source = (
+            "![[Figure-p0037-777.jpeg]]\n"
+            "Figure 1.14 – Adding a new C++ class from the Character class\n"
+        )
+        transformed, changes, uncertain = repair_text(source, "Chapter.md")
+        self.assertIn(
+            "![[Figure-p0037-777.jpeg]]\n\nFigure 1.14 – Adding a new C++ class from the Character class",
+            transformed,
+        )
+        self.assertTrue(any(change.kind == "figure-spacing" for change in changes))
+        self.assertFalse(uncertain)
+
+    def test_layout_repair_apply_creates_recoverable_backup(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            book = root / "Book"
+            book.mkdir()
+            note = book / "Chapter 01.md"
+            original = "### **A heading**\n\n1. First\n\n2. Second\n"
+            note.write_text(original, encoding="utf-8")
+            original_bytes = note.read_bytes()
+            report = layout_repair.preview(book)
+            backup = root / "pre-layout-repair.zip"
+            result = layout_repair.apply_repairs(book, report, backup)
+            self.assertEqual(result["files_changed"], 1)
+            self.assertIn("### A heading\n\n1. First\n2. Second", note.read_text(encoding="utf-8"))
+            with zipfile.ZipFile(backup) as archive:
+                self.assertEqual(archive.read("Chapter 01.md"), original_bytes)
+
+    def test_layout_repair_collapses_only_outside_code_fence(self) -> None:
+        source = "Before\n\n\n```cpp\n\n\nint main() {}\n```\n\n\nAfter\n"
+        transformed, _, _ = repair_text(source, "Chapter.md")
+        self.assertIn("Before\n\n```cpp\n\n\nint main() {}\n```\n\nAfter", transformed)
+
+    def test_unordered_lists_compact_wrapped_items_and_preserve_markers(self) -> None:
+        source = (
+            "- Non-engineer game developers, such as game designers and artists\n"
+            "  who aspire to learn C++.\n\n"
+            "* Software engineers who wish to acquire the necessary skills.\n\n"
+            "+ Students interested in Unreal C++.\n"
+        )
+        transformed, changes, uncertain = repair_text(source, "Preface.md")
+        self.assertIn(
+            "- Non-engineer game developers, such as game designers and artists\n"
+            "  who aspire to learn C++.\n"
+            "* Software engineers who wish to acquire the necessary skills.\n"
+            "+ Students interested in Unreal C++.",
+            transformed,
+        )
+        self.assertEqual(sum(change.kind == "unordered-list-spacing" for change in changes), 2)
+        self.assertFalse(uncertain)
+        repeated, repeated_changes, repeated_uncertain = repair_text(transformed, "Preface.md")
+        self.assertEqual(repeated, transformed)
+        self.assertFalse(repeated_changes)
+        self.assertEqual(repeated_uncertain, uncertain)
+
+    def test_unordered_lists_keep_spacing_for_structural_items(self) -> None:
+        source = (
+            "- Plain item one\n\n"
+            "- Plain item two\n\n"
+            "- Code item\n\n"
+            "  ```cpp\n"
+            "  int value = 1;\n"
+            "  ```\n\n"
+            "- Image item\n\n"
+            "  ![[image.png]]\n\n"
+            "- Parent item\n\n"
+            "  - Nested item\n\n"
+            "- Multi paragraph item\n\n"
+            "  A second paragraph.\n\n"
+            "- Final item\n\n"
+            "Paragraph after the list.\n"
+        )
+        transformed, changes, uncertain = repair_text(source, "Chapter.md")
+        self.assertIn("- Plain item one\n- Plain item two", transformed)
+        self.assertIn("  ```cpp\n  int value = 1;\n  ```\n\n- Image item", transformed)
+        self.assertIn("  ![[image.png]]\n\n- Parent item", transformed)
+        self.assertIn("  - Nested item\n\n- Multi paragraph item", transformed)
+        self.assertIn("  A second paragraph.\n\n- Final item", transformed)
+        self.assertNotIn("Final item\nParagraph after", transformed)
+        self.assertGreaterEqual(sum(change.kind == "unordered-list-spacing" for change in changes), 1)
+        self.assertFalse(uncertain)
+
+    def test_unordered_list_ambiguous_boundary_is_reported_and_preserved(self) -> None:
+        source = "- First item\n\nPossible paragraph boundary.\n\n- Second item\n"
+        transformed, changes, uncertain = repair_text(source, "Chapter.md")
+        self.assertEqual(transformed, source)
+        self.assertFalse(any(change.kind == "unordered-list-spacing" for change in changes))
+        self.assertEqual(uncertain[0]["kind"], "unordered-list-spacing")
+        self.assertIn("ambiguous", str(uncertain[0]["reason"]))
+
+    def test_pdf_generation_uses_compact_unordered_list_spacing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            pdf_path = Path(temporary) / "list.pdf"
+            pdf = canvas.Canvas(str(pdf_path))
+            pdf.setFont("Helvetica", 10)
+            pdf.drawString(60, 750, "- First generated item")
+            pdf.drawString(60, 730, "- Second generated item")
+            pdf.showPage()
+            pdf.save()
+            document = pipeline.require_pdf_runtime().open(str(pdf_path))
+            try:
+                markdown = pipeline.render_page_content(
+                    document[0],
+                    "",
+                    {"output": {"page_links": "chapter"}},
+                )
+            finally:
+                document.close()
+        self.assertIn("- First generated item\n- Second generated item", markdown)
+
+    def test_layout_repair_baseline_manifest_detects_manual_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            note = root / "Chapter.md"
+            note.write_text("# Current text\n", encoding="utf-8")
+            manifest = root / "latest-manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "files": [{
+                            "relative_path": "Chapter.md",
+                            "after_sha256": "not-the-current-hash",
+                        }]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            report = layout_repair.preview(root)
+            layout_repair.add_baseline_check(report, manifest)
+            self.assertEqual(len(report["baseline_manifest"]["conflicts"]), 1)
 
     def test_table_transform_accepts_repeated_pdf_bold_spans(self) -> None:
         source = (

@@ -63,6 +63,27 @@ The Agent must not rewrite the whole book. When a region is ambiguous, preserve 
 - For scans or unreliable text layers, pause and ask whether to use an OCR-processed source. Do not silently OCR.
 - Keep source and generated hashes, configuration/plan identity, and a recoverable backup for maintenance, but do not burden the normal conversation with implementation fields.
 
+## Existing Markdown layout repair
+
+When the user asks to clean an already generated book, treat it as a separate
+repair pass rather than silently re-converting the PDF. Inspect the actual
+Markdown first, show a preview with representative before/after snippets, and
+then apply only the confirmed conservative rules. Preserve intentional inline
+emphasis and all source content. For headings, PDF span artifacts, Figure
+captions, source-page links, and ordered-list spacing, read
+[references/layout-repair.md](references/layout-repair.md) and use the helper
+script there. Keep ambiguous image/caption/source relationships unchanged and
+report them for later Agent review. If an earlier generator manifest is
+available, pass it as a baseline so possible manual drift is detected before
+any backup or write; a detected conflict blocks the repair until the user has
+reviewed it.
+
+For ordinary unordered lists, keep consecutive same-level items together
+without blank lines. Treat `-`, `*`, and `+` as equivalent list markers while
+preserving each original marker. Keep necessary blank lines for code, images,
+tables, blockquotes, nested lists, multi-paragraph items, or ambiguous
+list/paragraph boundaries.
+
 ## Helper scripts
 
 Use `scripts/pdf_book_pipeline.py` for deterministic inspection, preview, generation, auditing, and rollback. The compatibility commands remain available:

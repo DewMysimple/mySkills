@@ -35,6 +35,11 @@ try:
 except ImportError:  # pragma: no cover - permits importing as a package.
     from .markdown_tables import transform_definition_lists  # type: ignore
 
+try:
+    from markdown_layout_repair import compact_unordered_list_spacing
+except ImportError:  # pragma: no cover - permits importing as a package.
+    from .markdown_layout_repair import compact_unordered_list_spacing  # type: ignore
+
 
 GENERATOR = "pdf-book-to-obsidian"
 VERSION = "0.2.0"
@@ -1106,7 +1111,9 @@ def page_markdown_from_spans(
         elif entry["has_bullet_prefix"] or any(abs(float(entry["y"]) - bullet_y) <= 3.0 for bullet_y in bullet_ys):
             line_text = "- " + line_text.lstrip()
         rendered.append(line_text)
-    return normalise_text("\n\n".join(rendered))
+    joined = "\n\n".join(rendered)
+    joined_lines = compact_unordered_list_spacing(joined.splitlines(keepends=True))
+    return normalise_text("".join(joined_lines))
 
 
 def escape_table_cell(value: Any) -> str:
@@ -1411,7 +1418,9 @@ def render_page_content(
     while event_index < len(events):
         rendered.append(str(events[event_index]["markdown"]))
         event_index += 1
-    return normalise_text("\n\n".join(rendered))
+    joined = "\n\n".join(rendered)
+    joined_lines = compact_unordered_list_spacing(joined.splitlines(keepends=True))
+    return normalise_text("".join(joined_lines))
 
 
 def merge_adjacent_code_fences(markdown: str) -> str:
