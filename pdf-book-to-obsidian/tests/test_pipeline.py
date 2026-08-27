@@ -49,6 +49,25 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(audit["tables_count"], 1)
         self.assertEqual(audit["rows_transformed"], 2)
 
+    def test_wrapped_pdf_outline_titles_are_recognized_as_chapters(self) -> None:
+        class OutlineOnlyDocument:
+            page_count = 100
+
+            def get_toc(self, simple: bool = True) -> list[list[object]]:
+                return [
+                    [1, "Chapter 1: Creating Your First Unreal\nC++ Game", 24],
+                    [1, "Chapter 2: Editing C++ Code in\nVisual Studio", 42],
+                    [1, "Chapter 3: Learning C++ and Object-Oriented Programming", 64],
+                ]
+
+        chapters = pipeline.infer_chapters(OutlineOnlyDocument(), {})
+        self.assertEqual([(item.number, item.start_page, item.end_page) for item in chapters], [
+            ("1", 24, 41),
+            ("2", 42, 63),
+            ("3", 64, 100),
+        ])
+        self.assertEqual(chapters[0].title, "Creating Your First Unreal C++ Game")
+
     def test_text_pdf_dry_run_and_apply_with_rollback(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -462,7 +462,11 @@ def infer_chapters(document: Any, config: dict[str, Any]) -> list[Chapter]:
     for row in toc or []:
         if len(row) < 3:
             continue
-        title = str(row[1]).strip()
+        # PDF outline titles frequently wrap across visual lines. Normalize
+        # that whitespace before applying the chapter pattern so a title such
+        # as ``Chapter 1: Creating Your First Unreal\nC++ Game`` remains one
+        # chapter heading.
+        title = re.sub(r"\s+", " ", str(row[1]).replace("\u00a0", " ")).strip()
         parsed = parse_heading(title, pattern)
         if parsed:
             headings.append((parsed[0], parsed[1], int(row[2])))
