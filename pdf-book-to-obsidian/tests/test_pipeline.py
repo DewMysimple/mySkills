@@ -49,6 +49,18 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(audit["tables_count"], 1)
         self.assertEqual(audit["rows_transformed"], 2)
 
+    def test_table_transform_accepts_repeated_pdf_bold_spans(self) -> None:
+        source = (
+            "## Technical requirements\n\n"
+            "- ** ****Operating system**: Windows 10\n\n"
+            "- ** ****Processor**: Intel 7th generation or equivalent\n\n"
+            "- ** ****Memory**: 16 GB of RAM\n"
+        )
+        transformed, audit = transform_definition_lists(source)
+        self.assertIn("| **Operating system** | Windows 10 |", transformed)
+        self.assertEqual(audit["tables_count"], 1)
+        self.assertEqual(audit["rows_transformed"], 3)
+
     def test_wrapped_pdf_outline_titles_are_recognized_as_chapters(self) -> None:
         class OutlineOnlyDocument:
             page_count = 100

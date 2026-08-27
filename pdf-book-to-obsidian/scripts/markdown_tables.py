@@ -11,16 +11,16 @@ def parse_table_candidate(line: str) -> dict[str, str] | None:
     """Parse only a top-level bold-label definition bullet."""
     if not line.startswith("- **"):
         return None
-    closing = line.find("**", 4)
-    if closing < 0:
+    # PDF styling can emit an empty/repeated bold span before the actual
+    # label, e.g. ``- ** ****Operating system**: Windows 10``. Treat that as
+    # the same structural list while leaving all non-matching prose alone.
+    match = re.match(r"^- (?P<opening>\*\*(?:\s*\*\*)*)(?P<label>.+?)\*\*(?P<separator>—|:)(?P<description>.*)$", line)
+    if not match:
         return None
-    label = line[4:closing]
+    label = match.group("label").strip()
     if not label or "*" in label:
         return None
-    tail = line[closing + 2 :]
-    if not tail.startswith(("—", ":")):
-        return None
-    return {"label": label, "description": tail[1:].lstrip()}
+    return {"label": label, "description": match.group("description").lstrip()}
 
 
 def wrapped_continuation_text(line: str, previous_description: str) -> str | None:
