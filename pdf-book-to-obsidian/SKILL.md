@@ -1,37 +1,71 @@
 ---
 name: pdf-book-to-obsidian
-description: Convert and maintain text-based PDF books as chapterized Obsidian Markdown libraries with configurable tables, attachments, reports, and rollback-safe writes.
+description: Convert PDF books into complete, structured Markdown knowledge bases with MOCs, indexes, assets, and Agent-assisted handling of book-specific layouts.
 ---
 
-# PDF Book to Obsidian
+# PDF Book to Markdown Knowledge Base
 
-Use this skill when a user wants a PDF book inspected, converted into an Obsidian vault, or safely maintained after conversion. It is PDF-first and preserves the source language and wording.
+Use this Skill when a user provides a PDF book and wants a complete, readable, navigable Markdown file system. Obsidian is an optional consumer of the output, not a required destination.
 
-## Operating contract
+## Stable task contract
 
-1. Treat `File/PDF/<book>/` as the managed source location. If the PDF is elsewhere, inspect it first and only copy it into that location after explicit authorization; never delete the original.
-2. Resolve the book configuration from `File/Config/<book>/book-config.yaml`. If it is missing, create a proposed configuration in the conversation or a dry-run output; do not silently guess chapter boundaries for an apply operation.
-3. Run `inspect` and then `dry-run` before any write. Present the predicted files, chapter boundaries, table changes, skipped/ambiguous blocks, source hash, and scan quality. Run `apply` only after the user explicitly authorizes the displayed plan.
-4. Use the bundled PDF runtime when available. The helper supports both `pymupdf` and the bundled legacy `fitz` import; do not install global packages as part of an ordinary conversion.
-5. Keep original wording. Do not translate, summarize, or add interpretations to generated source notes. Table conversion is conservative and must leave ambiguous lists unchanged.
-6. Never overwrite a file that has no generator marker or whose hash differs from the last applied manifest. Stop with a conflict report and ask for a targeted decision instead.
-7. Store resources by type and book: `File/PDF/<book>/`, `File/Config/<book>/`, `File/Reports/<book>/`, `File/Backups/<book>/`, and `File/Attachment/<book>/`. Chapter Markdown remains in the vault's configured output folders.
+Remember these rules without asking the user to repeat them:
 
-## Content-preserving structure
+- Preserve the source language, wording, order, and meaning.
+- Do not translate, summarize, correct, or silently invent missing content.
+- Produce a usable Markdown system with a book MOC, structural navigation, and a topic/term index unless the user explicitly opts out.
+- Use code for reproducible extraction and file operations; use Agent reasoning for structure, exceptions, and local transformation choices.
+- Inspect the whole PDF before conversion.
+- Show a conversion plan/preview before writing formal output.
+- Preserve the original PDF and do not overwrite manual files.
+- Low-risk layout cleanup may be automatic; structural or semantic uncertainty requires discussion.
+- After generation, check order, missing content, links, assets, code fences, tables, and overall readability.
 
-- Prefer explicit `chapters`, `parts`, and `sections` page ranges for a known book. Physical PDF pages are one-based; `print_pages` is optional metadata and is never used as an extraction boundary.
-- Normalize only layout artifacts such as wrapped bookmark titles and confirmed missing word spaces. Do not translate, spell-check, summarize, or correct source wording.
-- When `code_blocks.enabled` is true, detect Courier/monospace spans, preserve indentation and blank lines, fence only sufficiently long code blocks, and keep short code inline when configured. Use configured language mappings (`cpp`, `bash`, `powershell`, `ini`, or `text`); uncertain code uses `text`.
-- When `visual_tables.enabled` is true, convert only configured regions whose PDF drawing layer confirms stable horizontal and vertical grid geometry plus an explicit header. Cross-page rows and repeated headers are merged conservatively. Uncertain tables remain in the source extraction and are reported.
-- `table_transform` is a separate conservative pass for clear top-level definition lists and always uses `| Term / Item | Original description |`.
-- `output.page_links: headings-and-code` adds physical PDF page links before detected headings, code blocks, visual tables, and extracted images. `chapter`, `every-page`, and `none` remain available.
-- Attachment extraction covers chapter pages by default; configure `attachments.include_section_kinds` when images from Part overviews or selected back-matter sections should also be included. This keeps decorative front-matter assets out unless requested.
+## Required Agent workflow
 
-Generated chapter/section frontmatter uses the configurable `frontmatter.type_field` (use `type` for new books; `kind` remains supported for legacy vaults), records `source_pages`, `source_pdf`, `source_sha256`, and generator metadata, and may include book-specific metadata such as technology and language.
+The Agent must enter a planning conversation before formal output is created. Do not assume a vault, repository, `File` directory, naming style, or output location.
 
-## Script entry point
+1. Inspect the supplied PDF and nearby context only as needed to understand the book and possible destinations.
+2. Report concise findings: text quality, book structure, likely reading order, sections, code, tables, images, and anomalies.
+3. Discuss only the book-specific decisions that matter. At minimum, discuss the output location and the chapter-versus-section granularity. Also discuss scope, attachments, code, tables, complex layout, MOC/index depth, and OCR when the PDF makes them relevant.
+4. Give a concrete recommendation with alternatives and examples from the PDF. The user may accept, reject, or revise each important choice.
+5. Do not create formal Markdown until the user has confirmed the selected plan. Keep the technical configuration internal unless the user asks to see it.
+6. Execute the selected plan with the deterministic helpers, then have the Agent review the result. Automatically repair only clearly low-risk local issues; return to discussion for structure, order, or source-content questions.
 
-Use `scripts/pdf_book_pipeline.py` for deterministic operations:
+## Agent-assisted conversion
+
+Treat the PDF extraction as evidence, not as the final interpretation. Code may expose text blocks, coordinates, fonts, images, page renders, and candidate tables. The Agent may choose different strategies for different regions:
+
+- normal prose for ordinary paragraphs;
+- column-aware ordering for multi-column pages;
+- fenced code for confirmed code blocks;
+- visual-table reconstruction only when geometry and headers support it;
+- conservative list-to-table conversion only when the structure is clear and the user accepts it;
+- source-preserving fallback for uncertain regions.
+
+The Agent must not rewrite the whole book. When a region is ambiguous, preserve the extracted source and page reference, explain the uncertainty, and ask for a decision.
+
+## Output principles
+
+- The destination may be any user-selected directory or an Agent-recommended directory; it need not be an Obsidian vault.
+- At least split the main text by chapter. If a chapter has many meaningful subsections, propose splitting that chapter further and let the user decide.
+- Include front matter, appendices, indexes, and other back matter according to the book-specific plan after inspecting their value.
+- Generate structural links and a topic/term index page. Prefer index links over creating many standalone topic notes unless the user chooses deeper decomposition.
+- Keep images and other assets close enough to the Markdown system for reliable links. Discuss a different asset layout when the book or user's file system calls for it.
+- Keep reports, plans, and rollback data outside the main reading structure or in a clearly separated auxiliary area.
+
+## Safety and maintenance
+
+- A preview is a non-writing simulation of the proposed outputs and changes; the internal command may still be named `dry-run` for compatibility.
+- Never silently choose a missing output location, OCR policy, chapter boundary, or high-impact transformation.
+- Do not move or delete existing files as part of ordinary conversion.
+- If a generated file was manually edited or its recorded content changed, stop and report the conflict instead of overwriting it.
+- For scans or unreliable text layers, pause and ask whether to use an OCR-processed source. Do not silently OCR.
+- Keep source and generated hashes, configuration/plan identity, and a recoverable backup for maintenance, but do not burden the normal conversation with implementation fields.
+
+## Helper scripts
+
+Use `scripts/pdf_book_pipeline.py` for deterministic inspection, preview, generation, auditing, and rollback. The compatibility commands remain available:
 
 ```text
 inspect <vault> --book <book> [--source <pdf>]
@@ -41,4 +75,4 @@ audit <vault> --book <book>
 rollback <vault> --book <book> --backup <zip> --confirm-rollback
 ```
 
-Read [references/config-schema.md](references/config-schema.md) before creating or changing a book configuration. Read [references/output-contract.md](references/output-contract.md) when auditing generated files or interpreting a report. Read [references/maintenance-protocol.md](references/maintenance-protocol.md) before applying changes to an existing book.
+For new work, the helper also accepts an explicit PDF and arbitrary output root through `--source` and `--output-root`; the Agent should use that only after the user has selected the destination. Read [references/config-schema.md](references/config-schema.md) for the small internal plan/config contract, [references/output-contract.md](references/output-contract.md) for generated-file expectations, and [references/maintenance-protocol.md](references/maintenance-protocol.md) when updating an existing conversion.

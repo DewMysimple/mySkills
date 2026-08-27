@@ -124,6 +124,91 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(pipeline.command_rollback(rollback_args), 0)
             self.assertFalse(any(vault.glob("00_Book/*.md")))
 
+    def test_pdf_and_arbitrary_output_root_work_without_obsidian_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.pdf"
+            output = root / "Markdown Book"
+            output.mkdir()
+            self.make_pdf(
+                source,
+                [
+                    "Chapter 1: A Portable Book\n"
+                    "## Concepts\n"
+                    "The first paragraph.\n"
+                    "## Examples\n"
+                    "The second paragraph.",
+                ],
+            )
+            missing_destination_args = pipeline.build_parser().parse_args([
+                "dry-run",
+                "--source",
+                str(source),
+                "--book",
+                "Portable Book",
+            ])
+            with self.assertRaises(pipeline.PipelineError):
+                pipeline.build_dry_run(missing_destination_args)
+
+            dry_args = pipeline.build_parser().parse_args([
+                "dry-run",
+                "--source",
+                str(source),
+                "--output-root",
+                str(output),
+                "--book",
+                "Portable Book",
+            ])
+            summary = pipeline.build_dry_run(dry_args)
+            self.assertFalse(summary["conflicts"])
+            self.assertIn("topic_index", summary["stages"])
+            self.assertIn("moc", summary["stages"])
+            self.assertTrue(any(item["relative_path"] == "01_Topic Index.md" for item in summary["outputs"]))
+            self.assertTrue(all("File" not in item["relative_path"] for item in summary["outputs"]))
+
+            apply_args = pipeline.build_parser().parse_args([
+                "apply",
+                "--source",
+                str(source),
+                "--output-root",
+                str(output),
+                "--book",
+                "Portable Book",
+                "--confirm-apply",
+            ])
+            self.assertEqual(pipeline.command_apply(apply_args), 0)
+            self.assertTrue((output / "01_Topic Index.md").exists())
+            self.assertTrue((output / "00_MOC.md").exists())
+            self.assertIn("A Portable Book", (output / "01_Topic Index.md").read_text(encoding="utf-8"))
+            self.assertTrue((output / ".conversion" / "reports" / "latest-manifest.json").exists())
+            self.assertTrue(source.exists())
+
+            audit_args = pipeline.build_parser().parse_args([
+                "audit",
+                "--source",
+                str(source),
+                "--output-root",
+                str(output),
+                "--book",
+                "Portable Book",
+            ])
+            self.assertEqual(pipeline.command_audit(audit_args), 0)
+
+            backup = next((output / ".conversion" / "backups").glob("pre-*.zip"))
+            rollback_args = pipeline.build_parser().parse_args([
+                "rollback",
+                "--output-root",
+                str(output),
+                "--book",
+                "Portable Book",
+                "--backup",
+                str(backup),
+                "--confirm-rollback",
+            ])
+            self.assertEqual(pipeline.command_rollback(rollback_args), 0)
+            self.assertFalse((output / "01_Topic Index.md").exists())
+            self.assertFalse((output / "00_MOC.md").exists())
+
     def test_manual_file_conflict_is_reported_before_apply(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

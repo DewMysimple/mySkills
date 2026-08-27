@@ -1,45 +1,37 @@
-# Output and report contract
+# Markdown knowledge-base output contract
 
-## Managed resource folders
+The output is a general Markdown file system. Obsidian-compatible links are useful when the destination is an Obsidian vault, but an Obsidian vault is not required.
 
-```text
-File/PDF/<book>/           source PDFs
-File/Config/<book>/        book-config.yaml
-File/Reports/<book>/       JSON reports and latest manifests
-File/Backups/<book>/       ZIP rollback archives
-File/Attachment/<book>/    extracted images
-```
+## Required results
 
-Chapter notes remain in the configured vault output folders, normally one folder per Part. Generated notes contain a YAML frontmatter marker:
+- Main content is split at least by chapter.
+- A book-level MOC or equivalent home page links to the generated structure.
+- Structural navigation links connect Parts, chapters, and selected sections.
+- A topic/term index page links clear concepts to the relevant notes.
+- The source order and source language are preserved.
+- Images, code, tables, captions, footnotes, and page references are retained when present and selected by the plan.
 
-```yaml
-type: chapter
-generated_by: pdf-book-to-obsidian
-generator_version: 0.1.0
-source_sha256: <sha256>
-source_pages: [12, 30]
-source_pdf: File/PDF/<book>/<source>.pdf
-```
+## Source fidelity
 
-Chapter records may also include `part`, `chapter`, `title`, `print_pages`, `pdf_pages`, `technology`, `language`, and configured tags. Section records use the same provenance fields with their configured `type`. The primary type key is controlled by `frontmatter.type_field`; `kind` is retained for legacy configurations.
+Generated notes may normalize layout artifacts such as ordinary line wrapping, repeated running headers, and confirmed reading order. They must not translate, summarize, spell-check, silently correct, or invent text.
 
-For a book with explicit physical ranges, `pdf_pages` and `source_pages` are one-based PDF page numbers. `print_pages` is the book's printed-page range and is metadata only.
+Complex regions should retain a source-page reference and a reason whenever they are left unconverted.
 
-## Applied report
+## Provenance and maintenance
 
-An apply creates a timestamped JSON report and updates `latest-report.json` and `latest-manifest.json`. The report records:
+Generated Markdown may contain a small provenance marker with the source path, source hash, page range, generator name, and generator version. Technical reports and rollback metadata are separate from the reading structure.
 
-- source path, SHA-256, page count, text-page count, and scan quality;
-- configuration path and SHA-256;
-- requested and effective modules;
-- chapter boundaries and generated outputs;
-- before/after hashes for changed files;
-- table and row counts, skipped blocks, and conflicts;
-- visual-table audits, including configured page regions, explicit headers, row counts, grid status, and skip reasons;
-- backup path and rollback metadata.
+The manifest is an internal maintenance aid. It records generated files, prior and resulting hashes, selected plan identity, and any local decisions. It must not be treated as permission to overwrite a changed or manual file.
 
-The manifest's `files` records are the authority for detecting later manual edits. A file may be updated only when its current hash equals the previous applied `after_sha256` and it still carries the generator marker.
+## Preview and reports
 
-## Dry-run and audit
+The internal `dry-run` command is presented to users as a conversion preview. A preview should summarize:
 
-`inspect` and `dry-run` print JSON and do not write the vault by default. They may write only when the user explicitly supplies `--report-out`. `audit` is read-only and returns a non-zero exit code for missing generated files, hash drift, malformed frontmatter, broken local links, or invalid tables.
+- detected book structure;
+- proposed output location and file granularity;
+- detected assets, code, tables, and anomalies;
+- planned transformations with representative examples;
+- files to be created or updated;
+- unresolved decisions and conflicts.
+
+The preview does not write formal Markdown. Reports may be saved in a separate auxiliary location for later maintenance.

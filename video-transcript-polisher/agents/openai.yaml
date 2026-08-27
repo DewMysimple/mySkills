@@ -1,4 +1,4 @@
 interface:
   display_name: "Video Transcript Polisher"
-  short_description: "Conservatively polish ASR lecture transcripts"
-  default_prompt: "Use $video-transcript-polisher to conservatively polish this lecture transcript without summarizing it."
+  short_description: "Plan and conservatively polish ASR lecture transcripts"
+  default_prompt: "Use $video-transcript-polisher to assess the task, recommend single- or multi-agent handling, and wait for explicit confirmation before processing or writing; preserve the transcript without summarizing it."

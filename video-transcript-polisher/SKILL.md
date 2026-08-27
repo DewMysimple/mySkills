@@ -1,6 +1,6 @@
 ---
 name: video-transcript-polisher
-description: Conservatively polish Whisper or ASR video lecture transcripts into readable Markdown while preserving the original wording, order, and meaning; when explicitly requested, backfill an approved processed copy into a separate Markdown target while preserving its frontmatter; do not use for summarizing, translating, or rewriting the lecture.
+description: Conservatively polish Whisper or ASR video lecture transcripts into readable Markdown while preserving the original wording, order, and meaning; first assess whether single-agent or multi-agent handling is worthwhile and require explicit user confirmation before delegation or file writes; when explicitly requested, backfill an approved processed copy into a separate Markdown target while preserving its frontmatter; do not use for summarizing, translating, or rewriting the lecture.
 ---
 
 # Video Transcript Polisher
@@ -55,6 +55,78 @@ Do not swap synonyms, change tense or voice, or smooth an awkward-but-plausible 
 - Preserve existing `#` and `##` headings where possible. Normalize existing `###` and deeper headings to `##` while retaining their wording and position.
 - Convert speech into an ordered list only when the source explicitly presents ordered items, such as “first,” “second,” or “one, two.” Convert into an unordered list only when the source clearly presents separate parallel items. Keep each item faithful to the source and retain its order.
 - Do not manufacture lists from ordinary consecutive sentences. Avoid decorative tables, callouts, bolding, italics, or elaborate Markdown unless they already exist in the source or are necessary to preserve its structure.
+
+## Mode selection and execution gate
+
+Use two independent decisions for every request: the task mode and the execution/authorization stage. Never infer permission to delegate or write from a request to process files.
+
+### Select the task mode
+
+At the beginning of the request, classify the work as one of the following:
+
+- **Single-file processing:** one input transcript; process the complete file as one unit.
+- **Batch processing:** two or more input transcripts; process each file independently and never merge content across files.
+- **Approved-output backfill:** the user explicitly asks to replace, backfill, or synchronize an already processed copy into another Markdown target; use the backfill rules below and do not polish the body again.
+
+File count is a routing signal, not an automatic subagent threshold. If the request mixes task modes, has unclear mappings, or leaves the destination or overwrite scope unclear, remain in discussion/planning and ask for the missing detail.
+
+### Assess delegation before proposing or using subagents
+
+Before any subagent call, the main agent must perform a read-only assessment. Consider all of the following together:
+
+- number of files and approximate total text size;
+- whether files are independent or require shared cross-file context;
+- recurring terminology and the required consistency of corrections and formatting;
+- ASR ambiguity and the amount of semantic judgment required;
+- whether independent review would materially improve confidence;
+- expected coordination, latency, token, and cost overhead;
+- whether subagent/delegation capability is actually available in the current environment.
+
+Do not decide from file count alone. As a default judgment, recommend **main-agent only** for a small number of short or strongly interdependent files, and recommend **multi-agent processing** only when independent files are large or numerous enough that parallel work and independent review are likely to outweigh coordination costs. If the available information is insufficient, report that and stay in planning.
+
+Before asking for authorization, present a concise assessment in the user's language:
+
+```text
+任务评估：
+
+- 文件数量/总规模：
+- 文件独立性：
+- 跨文件术语一致性要求：
+- ASR 纠错与排版复杂度：
+- 独立复核的预期收益：
+- 协调、耗时和成本风险：
+- 当前是否具备子代理能力：
+- 推荐策略：主代理处理 / 启用多代理 / 信息不足
+- 推荐理由：
+- 写入范围：
+
+请确认处理策略和写入范围后再开始执行。
+```
+
+The assessment and recommendation are read-only. Even when the user explicitly asks to use subagents, do not start them until the user confirms the assessed strategy. The user may override the recommendation after the main agent states the expected tradeoffs; an explicit choice such as “确认启用多代理” or “确认由主代理处理” is required. If the user does not confirm, do not delegate, polish, or write.
+
+### Planning, discussion, and confirmation gate
+
+Any operation that will process and save a file must first pass through either Codex Plan Mode or a sufficiently detailed discussion. The planning/discussion stage must settle, as applicable, the input set, task mode, exact mappings, output paths, frontmatter and blank-line handling, overwrite scope, delegation recommendation and user choice, review strategy, and whether Git operations are excluded.
+
+- If the user requests execution without a preceding plan or complete discussion, automatically produce the read-only plan and pause.
+- Plan Mode itself never authorizes mutation. A detailed discussion can satisfy the planning stage only when the relevant scope and safety details are explicit.
+- Treat only an unambiguous authorization such as “确认执行”, “同意写入”, “开始处理”, or an equivalent explicit statement as permission to proceed. Do not treat a bare “好的” as authorization when the scope or strategy is not explicit.
+- One confirmation covers the complete, fixed file set, selected strategy, and stated write scope. If any of those change, invalidate the confirmation and plan again.
+- Do not create polished intermediate content, invoke subagents, or write formal outputs before confirmation.
+
+### Confirmed batch execution
+
+When the user confirms a multi-agent batch:
+
+- Give every processing agent the same immutable task brief, including the Skill rules, source language, shared terminology guidance, heading rules, output mapping, and prohibited transformations.
+- Have one processing agent read and process one complete input file. Do not split one file across agents.
+- Store candidate outputs in an isolated task-specific temporary directory; do not let subagents write the final `processed` or Analysis targets.
+- After each processing wave, use an independent review pass to compare each candidate with its source for omissions, reordering, unsupported corrections, summaries, and formatting violations. Review agents report findings and do not rewrite final files.
+- Choose concurrency dynamically from the assessment. When parallel processing is worthwhile, use bounded waves such as 4–8 files; this range is an execution limit, not the trigger for enabling multi-agent work.
+- The main agent resolves reviewer disagreements and performs the final consistency check before any formal write.
+- If a key file, review, mapping, or validation fails, stop the entire batch and do not perform partial formal writes.
+- If delegation is unavailable after confirmation, report the limitation and fall back to the main agent without silently changing the content rules or write scope.
 
 ## Approved-output backfill mode
 

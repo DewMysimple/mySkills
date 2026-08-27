@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Safe, configurable PDF-book to Obsidian pipeline.
+"""Safe, configurable PDF-book to Markdown knowledge-base pipeline.
 
 The script deliberately keeps the PDF extraction layer conservative. It is a
 local helper for the ``pdf-book-to-obsidian`` skill, not a general OCR system.
@@ -37,7 +37,7 @@ except ImportError:  # pragma: no cover - permits importing as a package.
 
 
 GENERATOR = "pdf-book-to-obsidian"
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 RESOURCE_DIRS = ("PDF", "Config", "Reports", "Backups", "Attachment")
 DEFAULT_CHAPTER_PATTERN = re.compile(
     r"^chapter\s+(?P<number>[0-9]+|[ivxlcdm]+)\s*[:.\-–—]?\s*(?P<title>.+)$",
@@ -367,6 +367,7 @@ def default_config(book: str) -> dict[str, Any]:
             "visual_tables": False,
             "lens": False,
             "moc": False,
+            "topic_index": False,
         },
         "output": {
             "chapter_filename": "Chapter {number} - {title}.md",
@@ -387,7 +388,21 @@ def default_config(book: str) -> dict[str, Any]:
         "parts": [],
         "sections": [],
         "book": book,
+        "book_specific_decisions": [],
     }
+
+
+RESOURCE_PATH_KEYS = {
+    "PDF": ("source_dir", "pdf_dir", "pdf"),
+    "Reports": ("reports", "report_dir"),
+    "Backups": ("backups", "backup_dir"),
+    "Attachment": ("attachments", "attachment_dir"),
+}
+
+
+def resolve_configured_path(base: Path, value: Any) -> Path:
+    raw = Path(str(value))
+    return raw.resolve() if raw.is_absolute() else (base / raw).resolve()
 
 
 def config_path_for(vault: Path, book: str, explicit: str | None) -> Path:
@@ -397,7 +412,12 @@ def config_path_for(vault: Path, book: str, explicit: str | None) -> Path:
     return vault / "File" / "Config" / safe_component(book) / "book-config.yaml"
 
 
-def resource_root(vault: Path, resource: str, book: str) -> Path:
+def resource_root(vault: Path, resource: str, book: str, config: dict[str, Any] | None = None) -> Path:
+    paths = (config or {}).get("paths") or {}
+    for key in RESOURCE_PATH_KEYS.get(resource, ()):
+        value = paths.get(key)
+        if value:
+            return resolve_configured_path(vault, value)
     return vault / "File" / resource / safe_component(book)
 
 
@@ -408,7 +428,7 @@ def resolve_source(
     cli_source: str | None,
 ) -> tuple[Path, Path, bool]:
     source_config = cli_source or config.get("source_pdf")
-    managed_dir = resource_root(vault, "PDF", book)
+    managed_dir = resource_root(vault, "PDF", book, config)
     if source_config:
         raw = Path(str(source_config))
         source = raw if raw.is_absolute() else vault_path(vault, raw)
@@ -700,7 +720,13 @@ def source_frontmatter(
     return fields
 
 
-def extract_images(document: Any, chapters: Iterable[Chapter], attachment_root: Path, book: str) -> tuple[dict[int, list[tuple[str, bytes]]], list[dict[str, Any]]]:
+def extract_images(
+    document: Any,
+    chapters: Iterable[Chapter],
+    attachment_root: Path,
+    book: str,
+    link_root: Path | None = None,
+) -> tuple[dict[int, list[tuple[str, bytes]]], list[dict[str, Any]]]:
     by_page: dict[int, list[tuple[str, bytes]]] = {}
     records: list[dict[str, Any]] = []
     seen: set[tuple[int, int]] = set()
@@ -722,7 +748,15 @@ def extract_images(document: Any, chapters: Iterable[Chapter], attachment_root: 
                     continue
                 extension = str(extracted.get("ext") or "bin")
                 filename = f"Figure-p{page_number:04d}-{xref}.{extension}"
-                relative = as_posix(Path("File") / "Attachment" / safe_component(book) / filename)
+                target = (attachment_root / filename).resolve()
+                root = (link_root or attachment_root).resolve()
+                try:
+                    relative = as_posix(target.relative_to(root))
+                except ValueError as exc:
+                    raise PipelineError(
+                        "The configured attachment directory must be inside the Markdown output root "
+                        f"so generated links remain portable: {target}"
+                    ) from exc
                 by_page.setdefault(page_number, []).append((relative, data))
                 records.append({
                     "relative_path": relative,
@@ -1616,6 +1650,7 @@ def make_moc(
     chapters: list[tuple[Chapter, Path]],
     section_outputs: list[tuple[Section, Path, str]],
     lens_outputs: list[OutputFile],
+    topic_index: OutputFile | None,
     config: dict[str, Any],
 ) -> OutputFile:
     output_config = config.get("output") or {}
@@ -1674,11 +1709,56 @@ def make_moc(
         for output in lens_outputs:
             path = Path(output.relative_path).with_suffix("")
             lines.append(f"- [[{as_posix(path)}]]")
+    if topic_index is not None:
+        lines.extend(["", "## Topic index", ""])
+        path = Path(topic_index.relative_path).with_suffix("")
+        lines.append(f"- [[{as_posix(path)}|Topic and term index]]")
     return OutputFile(relative, ("\n".join(lines).rstrip() + "\n").encode("utf-8"), "moc")
 
 
+def make_topic_index(
+    book: str,
+    chapters: list[tuple[Chapter, Path, str]],
+    section_outputs: list[tuple[Section, Path, str]],
+    config: dict[str, Any],
+) -> OutputFile:
+    """Create a compact heading/topic index without inventing topic notes."""
+    output_config = config.get("output") or {}
+    filename = str(output_config.get("topic_index_filename") or "Topic Index.md")
+    relative = Path(filename)
+    fields: dict[str, Any] = {
+        frontmatter_type(config): "topic-index",
+        "book": book,
+        "generated_by": GENERATOR,
+        "generator_version": VERSION,
+    }
+    lines = [emit_frontmatter(fields).rstrip("\n"), "# Topic and Term Index", ""]
+    entries: list[tuple[str, str, str]] = []
+    for chapter, path, text in chapters:
+        entries.append((chapter.title.casefold(), chapter.title, as_posix(path.with_suffix(""))))
+        for heading in re.findall(r"^#{2,4}\s+(.+?)\s*$", text, re.MULTILINE):
+            clean = re.sub(r"\s+#.*$", "", heading).strip()
+            if clean:
+                entries.append((clean.casefold(), clean, as_posix(path.with_suffix(""))))
+    for section, path, text in section_outputs:
+        for heading in re.findall(r"^#{2,4}\s+(.+?)\s*$", text, re.MULTILINE):
+            clean = re.sub(r"\s+#.*$", "", heading).strip()
+            if clean:
+                entries.append((clean.casefold(), clean, as_posix(path.with_suffix(""))))
+    seen: set[tuple[str, str]] = set()
+    for _, title, path in sorted(entries, key=lambda item: (item[0], item[2])):
+        identity = (title.casefold(), path)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        lines.append(f"- [[{path}#{title}|{title}]]")
+    if not seen:
+        lines.append("No explicit topic headings were identified.")
+    return OutputFile(as_posix(relative), ("\n".join(lines).rstrip() + "\n").encode("utf-8"), "topic-index")
+
+
 def stages_from_config(config: dict[str, Any], requested: str | None) -> list[str]:
-    valid = ("chapterize", "sections", "attachments", "code_blocks", "tables", "visual_tables", "lens", "moc")
+    valid = ("chapterize", "sections", "attachments", "code_blocks", "tables", "visual_tables", "lens", "moc", "topic_index")
     if requested:
         values = [item.strip() for item in requested.split(",") if item.strip()]
         invalid = [item for item in values if item not in valid]
@@ -1693,8 +1773,8 @@ def stages_from_config(config: dict[str, Any], requested: str | None) -> list[st
     return stages
 
 
-def previous_manifest(vault: Path, book: str) -> dict[str, Any]:
-    path = resource_root(vault, "Reports", book) / "latest-manifest.json"
+def previous_manifest(vault: Path, book: str, config: dict[str, Any] | None = None) -> dict[str, Any]:
+    path = resource_root(vault, "Reports", book, config) / "latest-manifest.json"
     if not path.exists():
         return {}
     try:
@@ -1786,7 +1866,14 @@ def build_outputs(
         display_book = str(config.get("book_title") or book)
         chapters = resolve_chapters(document, config)
         sections = resolve_sections(document, config) if "sections" in stages else []
-        attachment_root = resource_root(vault, "Attachment", book)
+        attachment_root = resource_root(vault, "Attachment", book, config)
+        try:
+            attachment_root.relative_to(vault.resolve())
+        except ValueError as exc:
+            raise PipelineError(
+                "The attachment directory must be inside the Markdown output root "
+                f"for portable generated links: {attachment_root}"
+            ) from exc
         images_by_page: dict[int, list[tuple[str, bytes]]] = {}
         image_records: list[dict[str, Any]] = []
         if "attachments" in stages:
@@ -1802,7 +1889,9 @@ def build_outputs(
                     if section.kind.strip().lower() in included_section_kinds
                 ],
             ]
-            images_by_page, image_records = extract_images(document, attachment_ranges, attachment_root, book)
+            images_by_page, image_records = extract_images(
+                document, attachment_ranges, attachment_root, book, link_root=vault
+            )
 
         visual_tables: list[dict[str, Any]] = []
         visual_skip_regions: dict[int, list[tuple[float, float]]] = {}
@@ -1892,9 +1981,19 @@ def build_outputs(
                 if match is not None:
                     outputs.append(OutputFile(record["relative_path"], match, "attachment"))
 
+        topic_index_output: OutputFile | None = None
+        if "topic_index" in stages:
+            topic_index_output = make_topic_index(
+                display_book, chapter_outputs, section_outputs, config
+            )
+            outputs.append(topic_index_output)
+
         if "moc" in stages:
             chapter_paths = [(chapter, relative) for chapter, relative, _ in chapter_outputs]
-            outputs.append(make_moc(display_book, chapter_paths, section_outputs, lens_outputs, config))
+            outputs.append(make_moc(
+                display_book, chapter_paths, section_outputs, lens_outputs,
+                topic_index_output, config,
+            ))
 
         details = {
             "chapters": [
@@ -1955,9 +2054,10 @@ def make_backup(
     book: str,
     classifications: list[dict[str, Any]],
     timestamp: str,
+    config: dict[str, Any] | None = None,
 ) -> tuple[Path | None, dict[str, Any]]:
     changed = [item for item in classifications if item["action"] in {"create", "update"}]
-    report_root = resource_root(vault, "Reports", book)
+    report_root = resource_root(vault, "Reports", book, config)
     for path in (report_root / "latest-manifest.json", report_root / "latest-report.json"):
         if path.exists():
             changed.append({
@@ -1969,7 +2069,7 @@ def make_backup(
     if not changed:
         return None, {"created": [], "restored": []}
 
-    backup_root = resource_root(vault, "Backups", book)
+    backup_root = resource_root(vault, "Backups", book, config)
     backup_root.mkdir(parents=True, exist_ok=True)
     backup_path = backup_root / f"pre-{timestamp}.zip"
     entries: list[dict[str, Any]] = []
@@ -2027,13 +2127,94 @@ def write_json(path: Path, value: dict[str, Any]) -> None:
 
 
 def prepare_context(args: argparse.Namespace) -> dict[str, Any]:
-    vault = Path(args.vault).resolve()
+    explicit_vault = getattr(args, "vault", None)
+    output_root_arg = getattr(args, "output_root", None)
+    explicit_config = getattr(args, "config", None)
+    source_arg = getattr(args, "source", None)
+    if explicit_config:
+        config_candidate = Path(str(explicit_config))
+        if not config_candidate.is_absolute():
+            config_base = Path(str(explicit_vault)).resolve() if explicit_vault else Path.cwd()
+            config_candidate = config_base / config_candidate
+        config_path = config_candidate.resolve()
+    else:
+        config_path = None
+
+    source_hint = Path(str(source_arg)).resolve() if source_arg else None
+    if explicit_vault:
+        vault = Path(str(explicit_vault)).resolve()
+    elif output_root_arg:
+        vault = Path(str(output_root_arg)).resolve()
+    elif config_path:
+        vault = config_path.parent.resolve()
+    elif source_hint and getattr(args, "command", "") == "inspect":
+        vault = source_hint.parent
+    else:
+        raise PipelineError(
+            "Specify an output root (or legacy vault), or provide --config with output.root."
+        )
     if not vault.exists() or not vault.is_dir():
-        raise PipelineError(f"Vault directory does not exist: {vault}")
-    book = str(args.book)
-    config_path = config_path_for(vault, book, getattr(args, "config", None))
-    raw_config = load_config(config_path)
-    config = deep_merge(default_config(book), raw_config)
+        raise PipelineError(f"Output root does not exist: {vault}")
+
+    if config_path is None and explicit_vault and getattr(args, "book", None):
+        config_path = config_path_for(
+            Path(str(explicit_vault)).resolve(), str(getattr(args, "book")), None
+        )
+    raw_config = load_config(config_path) if config_path else {}
+    configured_root = (raw_config.get("output") or {}).get("root") or raw_config.get("output_root")
+    if output_root_arg:
+        vault = Path(str(output_root_arg)).resolve()
+    elif not explicit_vault and configured_root:
+        vault = resolve_configured_path(config_path.parent if config_path else Path.cwd(), configured_root)
+    elif not explicit_vault and config_path and getattr(args, "command", "") != "inspect":
+        vault = config_path.parent.resolve()
+    if not vault.exists() or not vault.is_dir():
+        raise PipelineError(f"Output root does not exist: {vault}")
+
+    source_config = source_arg or raw_config.get("source_pdf")
+    book_value = getattr(args, "book", None) or raw_config.get("book_title") or raw_config.get("book")
+    if not book_value and source_config:
+        book_value = Path(str(source_config)).stem
+    if not book_value:
+        book_value = vault.name
+    book = str(book_value)
+    if config_path is None:
+        if explicit_vault:
+            config_path = config_path_for(vault, book, None)
+        else:
+            config_path = vault / ".pdf-book-config.yaml"
+
+    portable_mode = bool(output_root_arg or (not explicit_vault and configured_root))
+    base_config = default_config(book)
+    if portable_mode:
+        base_config = deep_merge(base_config, {
+            "modules": {
+                "chapterize": True,
+                "sections": True,
+                "attachments": True,
+                "code_blocks": True,
+                "tables": True,
+                "visual_tables": True,
+                "moc": True,
+                "topic_index": True,
+            },
+            "output": {
+                "root": str(vault),
+                "chapter_filename": "Chapter {number:02d} - {title}.md",
+                "moc_filename": "00_MOC.md",
+                "topic_index_filename": "01_Topic Index.md",
+                "default_part": "Chapters",
+                "page_links": "headings-and-code",
+            },
+            "paths": {
+                "source_dir": ".conversion/source",
+                "attachments": "Assets",
+                "reports": ".conversion/reports",
+                "backups": ".conversion/backups",
+            },
+        })
+    config = deep_merge(base_config, raw_config)
+    config.setdefault("output", {})["root"] = str(vault)
     source, managed_target, managed = resolve_source(vault, book, config, getattr(args, "source", None))
     source_info = inspect_pdf(source)
     if source_info["likely_scanned"] and not bool((config.get("ocr") or {}).get("enabled", False)):
@@ -2042,12 +2223,14 @@ def prepare_context(args: argparse.Namespace) -> dict[str, Any]:
         source_info["status"] = "text-extraction-available"
     return {
         "vault": vault,
+        "output_root": vault,
         "book": book,
         "config_path": config_path,
         "config": config,
         "source": source,
         "managed_target": managed_target,
         "managed": managed,
+        "portable_mode": portable_mode,
         "source_info": source_info,
     }
 
@@ -2091,15 +2274,18 @@ def build_dry_run(args: argparse.Namespace) -> dict[str, Any]:
     stages = stages_from_config(context["config"], getattr(args, "stages", None))
     source_for_output = context["source"]
     copy_source = bool(getattr(args, "copy_source", False))
-    if not context["managed"]:
+    if not context["managed"] and copy_source:
         source_for_output = context["managed_target"]
     outputs, details = build_outputs(
         context["vault"], context["book"], context["config"], context["source"],
         source_for_output, context["source_info"]["sha256"], stages,
     )
-    classifications = classify_outputs(context["vault"], outputs, previous_manifest(context["vault"], context["book"]))
+    classifications = classify_outputs(
+        context["vault"], outputs,
+        previous_manifest(context["vault"], context["book"], context["config"]),
+    )
     conflicts = [item for item in classifications if item.get("conflict")]
-    if not context["managed"] and not copy_source:
+    if not context["managed"] and not copy_source and not context["portable_mode"]:
         conflicts.append({
             "type": "external-source-not-managed",
             "source": str(context["source"]),
@@ -2119,6 +2305,7 @@ def build_dry_run(args: argparse.Namespace) -> dict[str, Any]:
         "managed_source": context["managed"],
         "copy_source_requested": copy_source,
         "copy_source_target": str(context["managed_target"]) if not context["managed"] and copy_source else None,
+        "book_specific_decisions": context["config"].get("book_specific_decisions", []),
         "stages": stages,
         "outputs": classifications,
         "conflicts": conflicts,
@@ -2144,18 +2331,24 @@ def command_apply(args: argparse.Namespace) -> int:
             "The PDF has no extractable text. This Skill does not run OCR itself; "
             "supply an OCR-processed PDF before apply."
         )
-    if not context["managed"] and not args.copy_source:
+    if not context["managed"] and not args.copy_source and not context["portable_mode"]:
         raise PipelineError(
             "The source PDF is outside File/PDF/<book>. Use --copy-source only after authorizing the managed copy."
         )
     stages = stages_from_config(context["config"], getattr(args, "stages", None))
-    source_for_output = context["managed_target"] if not context["managed"] else context["source"]
+    source_for_output = (
+        context["managed_target"]
+        if not context["managed"] and args.copy_source
+        else context["source"]
+    )
     outputs, details = build_outputs(
         context["vault"], context["book"], context["config"], context["source"],
         source_for_output, context["source_info"]["sha256"], stages,
     )
     adjusted = [adjust_text_line_endings(context["vault"], output) for output in outputs]
-    manifest_before = previous_manifest(context["vault"], context["book"])
+    manifest_before = previous_manifest(
+        context["vault"], context["book"], context["config"]
+    )
     classifications = classify_outputs(context["vault"], adjusted, manifest_before)
     conflicts = [item for item in classifications if item.get("conflict")]
     source_classification: dict[str, Any] | None = None
@@ -2181,7 +2374,9 @@ def command_apply(args: argparse.Namespace) -> int:
     backup_classifications = list(classifications)
     if source_classification:
         backup_classifications.append(source_classification)
-    backup_path, backup_manifest = make_backup(context["vault"], context["book"], backup_classifications, timestamp)
+    backup_path, backup_manifest = make_backup(
+        context["vault"], context["book"], backup_classifications, timestamp, context["config"]
+    )
     if not context["managed"] and args.copy_source:
         target = context["managed_target"]
         if not target.exists():
@@ -2213,7 +2408,7 @@ def command_apply(args: argparse.Namespace) -> int:
             "after_sha256": sha256_file(context["managed_target"]),
         })
 
-    reports = resource_root(context["vault"], "Reports", context["book"])
+    reports = resource_root(context["vault"], "Reports", context["book"], context["config"])
     reports.mkdir(parents=True, exist_ok=True)
     manifest = {
         "manifest_version": 1,
@@ -2223,6 +2418,7 @@ def command_apply(args: argparse.Namespace) -> int:
         "applied_at": timestamp,
         "source_sha256": context["source_info"]["sha256"],
         "config_sha256": sha256_file(context["config_path"]) if context["config_path"].exists() else None,
+        "book_specific_decisions": context["config"].get("book_specific_decisions", []),
         "files": file_records,
     }
     report = {
@@ -2236,6 +2432,7 @@ def command_apply(args: argparse.Namespace) -> int:
         "source": context["source_info"],
         "managed_source": context["managed"] or bool(args.copy_source),
         "managed_source_path": str(context["managed_target"] if not context["managed"] else context["source"]),
+        "book_specific_decisions": context["config"].get("book_specific_decisions", []),
         "stages": stages,
         "backup_path": str(backup_path) if backup_path else None,
         "backup_manifest": backup_manifest,
@@ -2340,10 +2537,10 @@ def markdown_link_targets(text: str) -> Iterable[str]:
 
 def command_audit(args: argparse.Namespace) -> int:
     context = prepare_context(args)
-    reports = resource_root(context["vault"], "Reports", context["book"])
+    reports = resource_root(context["vault"], "Reports", context["book"], context["config"])
     manifest_path = reports / "latest-manifest.json"
     issues: list[dict[str, Any]] = []
-    manifest = previous_manifest(context["vault"], context["book"])
+    manifest = previous_manifest(context["vault"], context["book"], context["config"])
     if not manifest:
         issues.append({"type": "missing-manifest", "path": str(manifest_path)})
     else:
@@ -2392,8 +2589,11 @@ def read_backup_manifest(archive: zipfile.ZipFile) -> dict[str, Any]:
 def command_rollback(args: argparse.Namespace) -> int:
     if not args.confirm_rollback:
         raise PipelineError("rollback requires --confirm-rollback after reviewing the target archive.")
-    vault = Path(args.vault).resolve()
-    book = str(args.book)
+    root_arg = getattr(args, "vault", None) or getattr(args, "output_root", None)
+    if not root_arg:
+        raise PipelineError("rollback requires a legacy vault or --output-root.")
+    vault = Path(str(root_arg)).resolve()
+    book = str(getattr(args, "book", None) or vault.name)
     backup_path = Path(args.backup).resolve()
     if not backup_path.exists() or backup_path.suffix.lower() != ".zip":
         raise PipelineError(f"Rollback ZIP does not exist: {backup_path}")
@@ -2443,10 +2643,15 @@ def command_rollback(args: argparse.Namespace) -> int:
 
 
 def add_common(parser: argparse.ArgumentParser, *, source: bool = True) -> None:
-    parser.add_argument("vault", help="Obsidian vault root")
-    parser.add_argument("--book", required=True, help="Book folder/display name")
+    parser.add_argument(
+        "vault",
+        nargs="?",
+        help="Legacy Obsidian vault root; omit when using --output-root.",
+    )
+    parser.add_argument("--book", help="Book display name; defaults to the PDF name")
+    parser.add_argument("--output-root", help="Markdown output root for non-Obsidian conversions")
     if source:
-        parser.add_argument("--source", help="Optional PDF path; managed PDFs live under File/PDF/<book>")
+        parser.add_argument("--source", help="PDF path; may be outside the output root")
         parser.add_argument("--config", help="Optional book-config.yaml path")
 
 
@@ -2462,15 +2667,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     dry_parser = commands.add_parser("dry-run", help="Plan changes without writing the vault")
     add_common(dry_parser)
-    dry_parser.add_argument("--stages", help="Comma-separated stages: chapterize,sections,attachments,code_blocks,tables,visual_tables,lens,moc")
-    dry_parser.add_argument("--copy-source", action="store_true", help="Plan copying an external source into File/PDF")
+    dry_parser.add_argument("--stages", help="Comma-separated conversion stages")
+    dry_parser.add_argument("--copy-source", action="store_true", help="Plan copying an external source into the configured source directory")
     dry_parser.add_argument("--report-out")
     dry_parser.set_defaults(handler=command_dry_run)
 
     apply_parser = commands.add_parser("apply", help="Apply an authorized dry-run")
     add_common(apply_parser)
-    apply_parser.add_argument("--stages", help="Comma-separated stages: chapterize,sections,attachments,code_blocks,tables,visual_tables,lens,moc")
-    apply_parser.add_argument("--copy-source", action="store_true", help="Copy an external PDF into File/PDF before writing")
+    apply_parser.add_argument("--stages", help="Comma-separated conversion stages")
+    apply_parser.add_argument("--copy-source", action="store_true", help="Copy an external PDF into the configured source directory before writing")
     apply_parser.add_argument("--confirm-apply", action="store_true", help="Required explicit write confirmation")
     apply_parser.set_defaults(handler=command_apply)
 

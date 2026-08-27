@@ -1,11 +1,15 @@
 # Maintenance protocol
 
-1. Locate the managed PDF, configuration, latest manifest, and latest report for the book.
-2. Verify the source PDF hash before planning changes. If it changed, show the new hash and require a new dry-run.
-3. Use `audit` to classify generated files, manually edited files, missing attachments, and broken links.
-4. Modify the configuration or source only after the user has chosen the intended change. Re-run `dry-run` and show the diff summary.
-5. Apply only when there are no unapproved conflicts. Create a ZIP backup before overwriting generated files.
-6. If a generated file has been manually edited, do not merge or overwrite it automatically. Preserve it and report the conflict for human resolution.
-7. Use `rollback` only with the matching book and backup archive. Refuse rollback when a target file changed after the apply unless the user resolves that conflict explicitly.
+Maintenance starts from the generated Markdown system and its auxiliary records, wherever the user chose to keep them.
 
-Do not remove old reports, backups, source PDFs, or manual notes as part of routine maintenance. Historical `File/Conversion` folders from older projects are not used by the new pipeline; migrate them separately and retain the old copy until verified.
+1. Identify the source PDF, output root, current plan/configuration, latest manifest, and latest report.
+2. Check the source PDF hash and inspect the current output before proposing changes.
+3. Ask the Agent to compare the new PDF structure or requested change with the previous plan. Do not assume that a previous book's layout applies to another book.
+4. Present only the affected book-specific decisions: changed chapter boundaries, new sections, layout anomalies, table/code/image choices, and output paths.
+5. Run a conversion preview and show the affected files and representative content.
+6. Create a backup before changing generated files.
+7. Update only files still matching the previous generated hash and marker. Preserve manual edits and report conflicts for discussion.
+8. Let the Agent review the updated regions and perform only clearly low-risk local repairs automatically.
+9. Audit source fidelity, order, links, attachments, code fences, tables, provenance, and generated-file hashes.
+
+Do not move, delete, or duplicate existing notes as part of routine maintenance. Migration is a separate user-approved task.
