@@ -17,6 +17,18 @@ Use this skill when a user wants a PDF book inspected, converted into an Obsidia
 6. Never overwrite a file that has no generator marker or whose hash differs from the last applied manifest. Stop with a conflict report and ask for a targeted decision instead.
 7. Store resources by type and book: `File/PDF/<book>/`, `File/Config/<book>/`, `File/Reports/<book>/`, `File/Backups/<book>/`, and `File/Attachment/<book>/`. Chapter Markdown remains in the vault's configured output folders.
 
+## Content-preserving structure
+
+- Prefer explicit `chapters`, `parts`, and `sections` page ranges for a known book. Physical PDF pages are one-based; `print_pages` is optional metadata and is never used as an extraction boundary.
+- Normalize only layout artifacts such as wrapped bookmark titles and confirmed missing word spaces. Do not translate, spell-check, summarize, or correct source wording.
+- When `code_blocks.enabled` is true, detect Courier/monospace spans, preserve indentation and blank lines, fence only sufficiently long code blocks, and keep short code inline when configured. Use configured language mappings (`cpp`, `bash`, `powershell`, `ini`, or `text`); uncertain code uses `text`.
+- When `visual_tables.enabled` is true, convert only configured regions whose PDF drawing layer confirms stable horizontal and vertical grid geometry plus an explicit header. Cross-page rows and repeated headers are merged conservatively. Uncertain tables remain in the source extraction and are reported.
+- `table_transform` is a separate conservative pass for clear top-level definition lists and always uses `| Term / Item | Original description |`.
+- `output.page_links: headings-and-code` adds physical PDF page links before detected headings, code blocks, visual tables, and extracted images. `chapter`, `every-page`, and `none` remain available.
+- Attachment extraction covers chapter pages by default; configure `attachments.include_section_kinds` when images from Part overviews or selected back-matter sections should also be included. This keeps decorative front-matter assets out unless requested.
+
+Generated chapter/section frontmatter uses the configurable `frontmatter.type_field` (use `type` for new books; `kind` remains supported for legacy vaults), records `source_pages`, `source_pdf`, `source_sha256`, and generator metadata, and may include book-specific metadata such as technology and language.
+
 ## Script entry point
 
 Use `scripts/pdf_book_pipeline.py` for deterministic operations:

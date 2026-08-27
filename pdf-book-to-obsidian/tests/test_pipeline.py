@@ -179,6 +179,86 @@ class PipelineTests(unittest.TestCase):
             self.assertFalse(managed_source.exists())
             self.assertTrue(external.exists())
 
+    def test_courier_code_is_fenced_as_cpp(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            pdf_path = Path(temporary) / "code.pdf"
+            pdf = canvas.Canvas(str(pdf_path), pagesize=(500, 500))
+            pdf.setFont("Courier", 10)
+            for index, line in enumerate(["#include <iostream>", "int main() {", "  return 0;", "}"]):
+                pdf.drawString(60, 420 - index * 16, line)
+            pdf.showPage()
+            pdf.save()
+            document = pipeline.require_pdf_runtime().open(str(pdf_path))
+            try:
+                config = {"code_blocks": {"enabled": True, "languages": {"cpp": "cpp", "default": "text"}}}
+                markdown = pipeline.page_markdown_from_spans(document[0], config=config)
+            finally:
+                document.close()
+            self.assertIn("```cpp", markdown)
+            self.assertIn("int main()", markdown)
+            self.assertIn("  return 0;", markdown)
+
+    def test_visual_table_uses_drawn_grid_and_merges_pages(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            pdf_path = Path(temporary) / "visual-table.pdf"
+            pdf = canvas.Canvas(str(pdf_path), pagesize=(400, 400))
+            for page_index, rows in enumerate([
+                [("Data type", "Size (bytes)", "Description"), ("int", "4", "Signed integer"), ("float", "4", "Floating point")],
+                [("Data type", "Size (bytes)", "Description"), ("string", "varied", "Text with | pipe"), ("bool", "1", "Boolean")],
+            ]):
+                x = [50, 120, 180, 350]
+                y = [300, 270, 220, 170, 100]
+                for xpos in x:
+                    pdf.line(xpos, 100, xpos, 300)
+                for ypos in y:
+                    pdf.line(50, ypos, 350, ypos)
+                baselines = [282, 250, 200]
+                for row_index, row in enumerate(rows):
+                    for col_index, value in enumerate(row):
+                        pdf.setFont("Helvetica", 9)
+                        pdf.drawString(x[col_index] + 5, baselines[row_index], value)
+                pdf.showPage()
+            pdf.save()
+            document = pipeline.require_pdf_runtime().open(str(pdf_path))
+            try:
+                config = {
+                    "visual_tables": {
+                        "enabled": True,
+                        "regions": [{
+                            "id": "demo-grid",
+                            "start_page": 1,
+                            "end_page": 2,
+                            "columns": [45, 120, 180, 355],
+                            "headers": ["Data type", "Size (bytes)", "Description"],
+                            "page_y_ranges": {"1": [95, 305], "2": [95, 305]},
+                        }],
+                    }
+                }
+                tables, skip_regions = pipeline.extract_visual_tables(document, config)
+            finally:
+                document.close()
+            self.assertEqual(len(tables), 1)
+            self.assertEqual(tables[0]["status"], "converted")
+            self.assertEqual([row[0] for row in tables[0]["rows"]], ["int", "float", "string", "bool"])
+            self.assertIn("Text with \\| pipe", tables[0]["markdown"])
+            self.assertEqual(sorted(skip_regions), [1, 2])
+
+    def test_cross_page_code_fences_are_merged_conservatively(self) -> None:
+        source = (
+            "> [Source PDF, p. 1](book.pdf#page=1)\n\n"
+            "```cpp\nint first = 1;\n```\n\n"
+            "> [Source PDF, p. 2](book.pdf#page=2)\n\n"
+            "```cpp\nint second = 2;\n```\n"
+        )
+        merged = pipeline.merge_adjacent_code_fences(source)
+        self.assertEqual(merged.count("```cpp"), 1)
+        self.assertEqual(merged.count("```"), 2)
+        self.assertIn("int first = 1;\nint second = 2;", merged)
+
+    def test_markdown_link_audit_allows_parentheses_in_pdf_filename(self) -> None:
+        targets = list(pipeline.markdown_link_targets("[PDF](../Book (Author).pdf#page=2)"))
+        self.assertEqual(targets, ["../Book (Author).pdf#page=2"])
+
 
 if __name__ == "__main__":
     unittest.main()
