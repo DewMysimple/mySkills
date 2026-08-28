@@ -19,7 +19,11 @@ output:
   source_reference_style: linked-blockquote
   figure_caption_style: plain
   image_placement: pdf-coordinate
+  inline_image_policy: auto
+  inline_image_syntax: obsidian-wiki
   callout_style: obsidian-callout
+  boxed_callout_policy: auto
+  toc_representation: preserve
 
 modules:
   chapterize: true
@@ -55,15 +59,49 @@ PDF:
   interleaves image events with text blocks using page coordinates and sorts
   multiple images by vertical then horizontal position. The append mode is a
   compatibility fallback for older conversions.
+- `inline_image_policy`: `auto` (classify only clear line-level UI icons) or
+  `block` (keep every extracted image as an independent block image).
+- `inline_image_syntax`: `obsidian-wiki` for `![[...]]` embeds or `markdown`
+  for portable Markdown image syntax. The default follows the selected
+  `markdown_baseline`.
 - `callout_style`: `obsidian-callout` (the default when the baseline is
   `obsidian`), `plain`, or `none`. Explicit block-leading Note/Tip/Warning and
   related labels are converted only in the Callout mode.
+- `boxed_callout_policy`: `auto` or `off`. In auto mode, clearly labelled
+  rounded editorial boxes may become Callouts; filled code examples,
+  diagrams, UML boxes, and unlabelled boxes are not converted.
+- `toc_representation`: `preserve` (default) or `chapter-tables`. The
+  conditional `chapter-tables` choice is appropriate only after the Agent
+  confirms reliable PDF TOC geometry and the user selects a navigable layout.
+  It does not force table conversion for other books. The optional helper
+  `scripts/toc_table_repair.py` records unmatched link targets instead of
+  inventing headings or links.
 
-Use `--only-chapters 1,2` for a confirmed partial generation. It limits writes
-to the selected chapter outputs and preserves the other file records in the
-maintenance manifest. The Agent should use `--allow-generated-drift` only for
-a user-authorized replacement of selected files that still carry the generator
-marker; it is intentionally unavailable as a general overwrite switch.
+The `visual_tables` section may contain an optional `discovery` field:
+
+```yaml
+visual_tables:
+  enabled: true
+  discovery: auto
+  regions: []
+```
+
+`discovery: auto` scans the PDF drawing layer for closed grids with stable
+columns and a complete header row. It complements explicit `regions`; it does
+not replace them. Set it to `off` when a book's visual layout needs entirely
+manual table decisions. Candidates that fail the confidence checks are
+preserved as source text and listed in the report.
+
+Use `--only-chapters 1,2` or `--only-sections foreword,contributors` for a
+confirmed partial generation. Section selection uses the stable `id` values in
+the `sections` configuration. A scoped run limits writes to the selected
+outputs, skips unrelated generated stages, and preserves the other file
+records in the maintenance manifest. Chapter-scope records may be merged into
+that manifest; section-only records remain in the dedicated apply report so a
+legacy chapter manifest is not expanded implicitly. The Agent should use
+`--allow-generated-drift` only for a user-authorized replacement of selected
+files that still carry the generator marker; it is intentionally unavailable
+as a general overwrite switch. The two selectors are mutually exclusive.
 
 ## Path rules
 

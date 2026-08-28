@@ -26,13 +26,28 @@ except ImportError:  # pragma: no cover - permits importing as a package.
 
 
 SOURCE_RE = re.compile(
-    r"^\s*>\s*\[Source PDF, p\.\s*(?P<page>\d+)\]\((?P<url>.+)\)\s*$"
+    r"^\s*>\s*(?:(?:\[Source PDF, p\.\s*(?P<link_page>\d+)\]\((?P<url>.+)\))|(?:Source PDF, p\.\s*(?P<plain_page>\d+)))\s*$"
 )
 IMAGE_RE = re.compile(r"^\s*!\[\[(?P<target>[^\]]+)\]\]\s*$")
 FIGURE_RE = re.compile(r"^\s*>?\s*(?P<label>Figure\s+\d+(?:\.\d+)?)\s*[–-]\s*(?P<title>.+?)\s*$")
 HEADING_RE = re.compile(r"^(?P<level>#{1,6})(?P<space>\s+)(?P<title>.*?)\s*$")
 ORDERED_RE = re.compile(r"^(?P<indent>\s*)(?P<number>\d+)[.)](?P<gap>\s+)(?P<body>.+?)\s*$")
 UNORDERED_RE = re.compile(r"^(?P<indent>[ \t]*)(?P<marker>[-+*])(?P<gap>[ \t]+)(?P<body>\S.*?)\s*$")
+SHORTCUT_STYLES = {"preserve", "inline-code"}
+SHORTCUT_SUBHEADINGS = {
+    "copy and paste",
+    "find and replace",
+    "code block operations",
+    "go to operations",
+    "debugging",
+}
+SHORTCUT_TOKEN_RE = re.compile(
+    r"\b(?:Ctrl|Shift|Alt|F(?:[1-9]|1[0-2])|Up|Down|Left|Right|Home|End|"
+    r"Insert|Delete|Backspace|Tab|Page\s+(?:Up|Dn|Down)|Mouse\s+click)\b",
+    re.IGNORECASE,
+)
+SOURCE_REFERENCE_STYLES = {"preserve", "plain-blockquote"}
+SPLIT_INLINE_URL_RE = re.compile(r"`(?P<left>https?://[^`]*?)`\s+`(?P<right>[^`]+)`", re.IGNORECASE)
 
 
 @dataclass
@@ -70,10 +85,30 @@ def is_content_markdown(path: Path, root: Path) -> bool:
     return True
 
 
-def markdown_files(root: Path) -> list[Path]:
-    return sorted(
-        path for path in root.rglob("*.md") if is_content_markdown(path, root)
-    )
+def markdown_files(root: Path, include: Iterable[str] | None = None) -> list[Path]:
+    """Return content Markdown files, optionally limited to relative paths."""
+    if include is None:
+        return sorted(
+            path for path in root.rglob("*.md") if is_content_markdown(path, root)
+        )
+
+    selected: list[Path] = []
+    seen: set[Path] = set()
+    for relative_value in include:
+        relative = Path(relative_value)
+        if relative.is_absolute():
+            raise ValueError(f"--include must use a path relative to --book-root: {relative}")
+        path = (root / relative).resolve()
+        try:
+            path.relative_to(root)
+        except ValueError as error:
+            raise ValueError(f"--include escapes --book-root: {relative}") from error
+        if not path.is_file() or not is_content_markdown(path, root):
+            raise ValueError(f"Included content Markdown file does not exist: {relative}")
+        if path not in seen:
+            selected.append(path)
+            seen.add(path)
+    return sorted(selected)
 
 
 def split_frontmatter(text: str) -> tuple[str, str]:
@@ -83,10 +118,109 @@ def split_frontmatter(text: str) -> tuple[str, str]:
     return match.group(1), text[match.end() :]
 
 
+def frontmatter_title(frontmatter: str) -> str:
+    match = re.search(r"^title:\s*[\"']?(.*?)[\"']?\s*$", frontmatter, re.MULTILINE)
+    return match.group(1).strip() if match else ""
+
+
+def remove_page_chrome(
+    lines: list[str],
+    frontmatter: str,
+    changes: list[Change],
+    *,
+    line_offset: int = 0,
+) -> list[str]:
+    """Remove a standalone running header matching the declared file title."""
+    title = frontmatter_title(frontmatter)
+    if not title:
+        return lines
+    title_key = re.sub(r"\s+", " ", title).strip().casefold()
+    page_chrome = re.compile(r"^(?P<label>.+?)\s+(?P<page>(?:\d{1,4}|[ivxlcdm]{1,12}))$")
+    result: list[str] = []
+    for index, line in enumerate(lines):
+        content = line.rstrip("\r\n")
+        match = page_chrome.match(content.strip())
+        label_key = (
+            re.sub(r"\s+", " ", match.group("label")).strip().casefold()
+            if match else ""
+        )
+        if match and label_key == title_key:
+            changes.append(Change(
+                kind="page-chrome",
+                line=index + 1 + line_offset,
+                before=content,
+                after="removed high-confidence running header",
+            ))
+            continue
+        result.append(line)
+    return result
+
+
+def remove_standalone_roman_page_chrome(
+    lines: list[str],
+    changes: list[Change],
+    *,
+    line_offset: int = 0,
+) -> list[str]:
+    """Remove isolated Roman page numbers when a source marker follows.
+
+    A Roman numeral by itself can be real book content, so this deliberately
+    requires the strong PDF-extraction pattern seen in front matter: the
+    numeral is a standalone line and the next non-empty line is an explicit
+    Source PDF marker.  Other isolated numbers remain untouched.
+    """
+    roman_re = re.compile(r"^[ivxlcdm]{1,12}$", re.IGNORECASE)
+    result: list[str] = []
+    for index, line in enumerate(lines):
+        content = line.rstrip("\r\n")
+        if not roman_re.fullmatch(content.strip()):
+            result.append(line)
+            continue
+        next_nonempty = next(
+            (
+                candidate.strip()
+                for candidate in lines[index + 1 : index + 4]
+                if candidate.strip()
+            ),
+            "",
+        )
+        if not SOURCE_RE.match(next_nonempty):
+            result.append(line)
+            continue
+        changes.append(Change(
+            kind="page-chrome",
+            line=index + 1 + line_offset,
+            before=content,
+            after="removed isolated Roman page footer before Source PDF marker",
+        ))
+    return result
+
+
 def normalise_line_endings(text: str, newline: str) -> str:
     if newline == "\r\n":
         return text.replace("\r\n", "\n").replace("\n", "\r\n")
     return text.replace("\r\n", "\n")
+
+
+def merge_split_inline_code_urls(text: str) -> tuple[str, int]:
+    """Join adjacent code spans only when the left span ends at a URL edge."""
+    count = 0
+    while True:
+        def replace(match: re.Match[str]) -> str:
+            nonlocal count
+            left = match.group("left")
+            right = match.group("right")
+            if not re.fullmatch(r"[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+", right):
+                return match.group(0)
+            if not (left.endswith(("/", "://", "?", "&", "=", "#", "-", "."))):
+                return match.group(0)
+            count += 1
+            return f"`{left}{right}`"
+
+        repaired = SPLIT_INLINE_URL_RE.sub(replace, text)
+        if repaired == text:
+            return text, count
+        text = repaired
 
 
 def detected_newline(raw: bytes) -> str:
@@ -115,12 +249,26 @@ def clean_heading_suffix(title: str, *, toc_file: bool) -> str:
     return cleaned.strip()
 
 
+def clean_toc_heading(title: str) -> str:
+    """Clean a TOC heading without inferring its nested entry structure."""
+    cleaned = strip_heading_markup(title)
+    if re.search(r"\s+[—-]\s+p\.\s*\d+\s*$", cleaned):
+        return re.sub(r"\s+", " ", cleaned).strip()
+    page = re.search(r"\s+(\d{1,4})\s*$", cleaned)
+    if page:
+        cleaned = f"{cleaned[:page.start()].rstrip()} — p. {page.group(1)}"
+    return cleaned
+
+
 def repair_heading(line: str, *, toc_file: bool) -> tuple[str, bool]:
     match = HEADING_RE.match(line)
     if not match:
         return line, False
-    title = clean_heading_suffix(match.group("title"), toc_file=toc_file)
-    title = strip_heading_markup(title)
+    title = (
+        clean_toc_heading(match.group("title"))
+        if toc_file
+        else strip_heading_markup(clean_heading_suffix(match.group("title"), toc_file=False))
+    )
     repaired = f"{match.group('level')} {title}" if title else match.group("level")
     return repaired, repaired != line.rstrip("\r\n")
 
@@ -133,6 +281,25 @@ def repair_broken_emphasis(line: str) -> tuple[str, bool]:
     # The PDF text layer can carry a backspace control character at a span
     # boundary.  It has no readable meaning in Markdown and is safe to drop.
     repaired = repaired.replace("\x08", " ")
+    # A PDF list bullet can split an italic label at the opening marker:
+    # '- * Chapter 1*' -> '- *Chapter 1*'.  Only repair this unambiguous
+    # list-start form; ordinary emphasis elsewhere remains untouched.
+    repaired = re.sub(
+        r"^(\s*[-*+]\s+)\*\s+(?=[^*\r\n]+\*(?:\s*[,.;:]|\s*$))",
+        r"\1*",
+        repaired,
+    )
+    # A long italic phrase can be split across adjacent PDF font spans:
+    # '*Unreal Engine ... C++ * *Scripting*'.
+    for _ in range(4):
+        joined = re.sub(
+            r"\*(?P<left>[^*\r\n]+?)\s+\*\s+\*(?P<right>[^*\r\n]+?)\*",
+            lambda match: f"*{match.group('left').rstrip()} {match.group('right').lstrip()}*",
+            repaired,
+        )
+        if joined == repaired:
+            break
+        repaired = joined
     # A list item can begin with a duplicated opening marker:
     # '- ** ****text**' -> '- **text**'.  Handle this before the generic rule.
     repaired = re.sub(r"^(\s*[-*+]\s+)\*\*\s+\*\*\*\*(?=\S)", r"\1**", repaired)
@@ -146,7 +313,107 @@ def repair_broken_emphasis(line: str) -> tuple[str, bool]:
     # whether the marker is closing so that '**Operator** **Name**' is left
     # alone while '**Desktop with C++ **group' is repaired.
     repaired = repair_trailing_bold_space(repaired)
+    # Some PDF spans omit the space before the opening marker and duplicate
+    # the marker between adjacent bold spans, e.g. ``the** Find**** calculator**``.
+    # These forms are only repaired when the marker boundary and whitespace
+    # pattern make the extraction artifact unambiguous.
+    repaired = re.sub(
+        r"(?P<prefix>\w)\*\*\s+(?P<first>[^*\r\n]+?)\*{4}\s+(?P<second>[^*\r\n]+?)\*\*",
+        lambda match: (
+            f"{match.group('prefix')} **{match.group('first').strip()} "
+            f"{match.group('second').strip()}**"
+        ),
+        repaired,
+    )
+    repaired = re.sub(
+        r"(?P<prefix>\w)\*\*\s+(?P<text>[^*\r\n]+?)\*\*(?=$|[\s.,;:!?)}\]])",
+        lambda match: f"{match.group('prefix')} **{match.group('text').strip()}**",
+        repaired,
+    )
     return repaired, repaired != line
+
+
+def shortcut_label_parts(label: str) -> list[str]:
+    """Split a shortcut label into alternatives without retaining PDF emphasis."""
+    cleaned = re.sub(r"\*+", "", label)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned:
+        return []
+    # Commas in these labels separate alternative shortcuts.  Parentheses are
+    # part of one key label, so only split commas outside parentheses.
+    parts: list[str] = []
+    start = 0
+    depth = 0
+    for index, character in enumerate(cleaned):
+        if character == "(":
+            depth += 1
+        elif character == ")" and depth:
+            depth -= 1
+        elif character == "," and depth == 0:
+            part = cleaned[start:index].strip()
+            if part:
+                parts.append(part)
+            start = index + 1
+    final = cleaned[start:].strip()
+    if final:
+        parts.append(final)
+    return parts
+
+
+def repair_shortcut_list_item(
+    line: str,
+    *,
+    style: str,
+) -> tuple[str, bool]:
+    """Render a clearly extracted keyboard-shortcut list label as inline code."""
+    if style not in SHORTCUT_STYLES:
+        raise ValueError("shortcut style must be preserve or inline-code")
+    if style == "preserve":
+        return line, False
+    match = unordered_item_match(line)
+    if match is None:
+        return line, False
+    body = match.group("body")
+    label, separator, description = body.partition(":")
+    if not separator:
+        return line, False
+    # Require both a keyboard-like token and the characteristic leading PDF
+    # emphasis fragment.  This prevents ordinary bold/italic list entries
+    # such as ``- **C++** ...`` from being reformatted.
+    if not SHORTCUT_TOKEN_RE.search(label):
+        return line, False
+    if not re.match(r"\s*\*+\s+\*{1,4}", label):
+        return line, False
+    alternatives = shortcut_label_parts(label)
+    if not alternatives:
+        return line, False
+    formatted = ", ".join(f"`{part}`" for part in alternatives)
+    repaired = (
+        f"{match.group('indent')}{match.group('marker')}{match.group('gap')}"
+        f"{formatted}:{description}"
+    )
+    return repaired, repaired != line.rstrip("\r\n")
+
+
+def repair_shortcut_subheading(
+    line: str,
+    *,
+    parent_heading_level: int | None,
+    style: str,
+) -> tuple[str, bool]:
+    """Turn a known standalone shortcut label into the next heading level."""
+    if style not in SHORTCUT_STYLES:
+        raise ValueError("shortcut style must be preserve or inline-code")
+    if style == "preserve" or parent_heading_level is None or parent_heading_level >= 6:
+        return line, False
+    match = re.match(r"^(?P<indent>\s*)\*{3}\s*(?P<title>[^*\r\n]+?)\s*\*{3}\s*$", line)
+    if not match:
+        return line, False
+    title = re.sub(r"\s+", " ", match.group("title")).strip()
+    if title.casefold() not in SHORTCUT_SUBHEADINGS:
+        return line, False
+    repaired = f"{match.group('indent')}{'#' * (parent_heading_level + 1)} {title}"
+    return repaired, repaired != line.rstrip("\r\n")
 
 
 def repair_trailing_bold_space(line: str) -> str:
@@ -179,6 +446,142 @@ def is_source_line(line: str) -> re.Match[str] | None:
     return SOURCE_RE.match(line)
 
 
+def source_page(match: re.Match[str]) -> str:
+    return match.group("link_page") or match.group("plain_page")
+
+
+def source_url(match: re.Match[str]) -> str | None:
+    return match.group("url")
+
+
+def normalize_source_references(
+    lines: list[str],
+    changes: list[Change],
+    *,
+    style: str,
+    line_offset: int = 0,
+) -> list[str]:
+    """Normalize legacy source links while preserving page numbers."""
+    if style not in SOURCE_REFERENCE_STYLES:
+        raise ValueError("source reference style must be preserve or plain-blockquote")
+    if style == "preserve":
+        return lines
+    result = list(lines)
+    for index, line in enumerate(result):
+        match = is_source_line(line)
+        if match is None or source_url(match) is None:
+            continue
+        ending = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
+        repaired = f"> Source PDF, p. {source_page(match)}{ending}"
+        if repaired == line:
+            continue
+        changes.append(
+            Change(
+                kind="source-reference-style",
+                line=index + 1 + line_offset,
+                before=line.rstrip("\r\n"),
+                after=repaired.rstrip("\r\n"),
+            )
+        )
+        result[index] = repaired
+    return result
+
+
+def deduplicate_local_source_references(
+    lines: list[str],
+    changes: list[Change],
+    *,
+    line_offset: int = 0,
+) -> list[str]:
+    """Remove only repeated same-page refs separated by heading metadata."""
+    remove: set[int] = set()
+    last_source: tuple[int, str] | None = None
+    for index, line in enumerate(lines):
+        match = is_source_line(line)
+        if match is None:
+            continue
+        page = source_page(match)
+        if last_source is not None:
+            previous_index, previous_page = last_source
+            between = [
+                line
+                for position, line in enumerate(lines[previous_index + 1 : index], previous_index + 1)
+                if position not in remove
+            ]
+            meaningful = [item for item in between if item.strip()]
+            if (
+                page == previous_page
+                and meaningful
+                and all(HEADING_RE.match(item.rstrip("\r\n")) for item in meaningful)
+            ):
+                remove.add(index)
+                changes.append(
+                    Change(
+                        kind="duplicate-source-reference",
+                        line=index + 1 + line_offset,
+                        before=line.rstrip("\r\n"),
+                        after=f"removed duplicate of line {previous_index + 1 + line_offset}",
+                    )
+                )
+                continue
+        last_source = (index, page)
+    return [line for index, line in enumerate(lines) if index not in remove]
+
+
+def repair_toc_line(line: str) -> tuple[str, bool]:
+    """Remove only explicit PDF emphasis/control fragments from TOC text."""
+    if not ("**" in line or "\x08" in line):
+        return line, False
+    ending = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
+    cleaned = line.rstrip("\r\n").replace("\x08", "")
+    cleaned = cleaned.replace("**", "")
+    cleaned = re.sub(r"[ \t]+", " ", cleaned).strip()
+    repaired = cleaned + ending
+    return repaired, repaired != line
+
+
+def heading_key(line: str) -> str | None:
+    match = HEADING_RE.match(line.rstrip("\r\n"))
+    if match is None:
+        return None
+    title = strip_heading_markup(match.group("title"))
+    title = re.sub(r"[–—]", "-", title)
+    return re.sub(r"\s+", " ", title).strip().casefold()
+
+
+def remove_redundant_leading_heading(
+    lines: list[str],
+    changes: list[Change],
+    *,
+    line_offset: int = 0,
+) -> list[str]:
+    """Remove a duplicate generated/source heading at the start of a note."""
+    positions = [
+        index
+        for index, line in enumerate(lines[:16])
+        if HEADING_RE.match(line.rstrip("\r\n"))
+    ]
+    if len(positions) < 2:
+        return lines
+    first, second = positions[0], positions[1]
+    first_key = heading_key(lines[first])
+    second_key = heading_key(lines[second])
+    if not first_key or first_key != second_key:
+        return lines
+    between = [line for line in lines[first + 1 : second] if line.strip()]
+    if not all(is_source_line(line) or HEADING_RE.match(line.rstrip("\r\n")) for line in between):
+        return lines
+    changes.append(
+        Change(
+            kind="duplicate-heading",
+            line=second + 1 + line_offset,
+            before=lines[second].rstrip("\r\n"),
+            after=f"removed duplicate of line {first + 1 + line_offset}",
+        )
+    )
+    return [line for index, line in enumerate(lines) if index != second]
+
+
 def is_image_line(line: str) -> re.Match[str] | None:
     return IMAGE_RE.match(line)
 
@@ -187,12 +590,26 @@ def is_figure_line(line: str) -> re.Match[str] | None:
     return FIGURE_RE.match(line)
 
 
-def repair_figure_caption_prefix(line: str) -> tuple[str, bool]:
-    """Remove an accidental blockquote marker from a Figure caption."""
-    match = re.match(r"^(?P<indent>\s*)>\s*(?P<caption>Figure\s+\d+(?:\.\d+)?\s*[–-]\s*.+?)\s*$", line)
+def repair_figure_caption_prefix(
+    line: str,
+    *,
+    style: str = "blockquote",
+) -> tuple[str, bool]:
+    """Apply the selected presentation style to a clear Figure caption."""
+    if style not in {"plain", "blockquote"}:
+        raise ValueError("figure caption style must be plain or blockquote")
+    match = re.match(
+        r"^(?P<indent>\s*)(?P<quote>>\s*)?(?P<caption>Figure\s+\d+(?:\.\d+)?\s*[–-]\s*.+?)\s*$",
+        line,
+    )
     if not match:
         return line, False
-    return f"{match.group('indent')}{match.group('caption').rstrip()}", True
+    caption = match.group("caption").rstrip()
+    if style == "blockquote":
+        repaired = f"{match.group('indent')}> {caption}"
+    else:
+        repaired = f"{match.group('indent')}{caption}"
+    return repaired, repaired != line.rstrip("\r\n")
 
 
 def nonblank_before(lines: list[str], index: int, distance: int = 3) -> int | None:
@@ -265,13 +682,18 @@ def repair_figure_sources(
         if not source_match or not caption_match:
             continue
 
+        if source_url(source_match) is None:
+            # Plain source references intentionally stay before the image.
+            # Only a linked source line can be safely moved into a caption,
+            # because the caption needs a URL to preserve the original link.
+            continue
         records.append(
             {
                 "image_index": image_index,
                 "caption_index": caption_index,
                 "source_index": source_index,
-                "page": source_match.group("page"),
-                "url": source_match.group("url"),
+                "page": source_page(source_match),
+                "url": source_url(source_match),
             }
         )
 
@@ -546,13 +968,33 @@ def repair_text(
     relative_path: str,
     *,
     callout_style: str = "obsidian-callout",
+    figure_caption_style: str = "blockquote",
+    shortcut_style: str = "preserve",
+    source_reference_style: str = "preserve",
 ) -> tuple[str, list[Change], list[dict[str, object]]]:
+    if shortcut_style not in SHORTCUT_STYLES:
+        raise ValueError("shortcut style must be preserve or inline-code")
+    if source_reference_style not in SOURCE_REFERENCE_STYLES:
+        raise ValueError("source reference style must be preserve or plain-blockquote")
     frontmatter, body = split_frontmatter(text)
     newline = "\r\n" if "\r\n" in body else "\n"
     lines = body.splitlines(keepends=True)
     changes: list[Change] = []
     uncertain: list[dict[str, object]] = []
     toc_file = Path(relative_path).name.lower() == "05_table of contents.md"
+    parent_heading_level: int | None = None
+
+    lines = remove_page_chrome(
+        lines,
+        frontmatter,
+        changes,
+        line_offset=frontmatter.count("\n"),
+    )
+    lines = remove_standalone_roman_page_chrome(
+        lines,
+        changes,
+        line_offset=frontmatter.count("\n"),
+    )
 
     for index, line in enumerate(lines):
         content = line.rstrip("\r\n")
@@ -568,9 +1010,74 @@ def repair_text(
             )
             suffix = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
             lines[index] = repaired + suffix
+            parent_heading_level = len(repaired.split(None, 1)[0])
             continue
 
-        repaired, changed = repair_figure_caption_prefix(content)
+        heading_match = HEADING_RE.match(content)
+        if heading_match:
+            parent_heading_level = len(heading_match.group("level"))
+
+        if toc_file:
+            repaired, changed = repair_toc_line(content)
+            if changed:
+                changes.append(
+                    Change(
+                        kind="toc-format",
+                        line=index + 1 + (frontmatter.count("\n")),
+                        before=content,
+                        after=repaired.rstrip("\r\n"),
+                    )
+                )
+                lines[index] = repaired
+                continue
+
+        repaired, changed = repair_shortcut_subheading(
+            content,
+            parent_heading_level=parent_heading_level,
+            style=shortcut_style,
+        )
+        if changed:
+            changes.append(
+                Change(
+                    kind="shortcut-subheading",
+                    line=index + 1 + (frontmatter.count("\n")),
+                    before=content,
+                    after=repaired,
+                )
+            )
+            suffix = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
+            lines[index] = repaired + suffix
+            continue
+
+        repaired, changed = repair_shortcut_list_item(content, style=shortcut_style)
+        if changed:
+            changes.append(
+                Change(
+                    kind="shortcut-inline-code",
+                    line=index + 1 + (frontmatter.count("\n")),
+                    before=content,
+                    after=repaired,
+                )
+            )
+            repaired_after_emphasis, emphasis_changed = repair_broken_emphasis(repaired)
+            if emphasis_changed:
+                changes.append(
+                    Change(
+                        kind="broken-emphasis",
+                        line=index + 1 + (frontmatter.count("\n")),
+                        before=repaired,
+                        after=repaired_after_emphasis.rstrip("\r\n"),
+                    )
+                )
+                repaired = repaired_after_emphasis.rstrip("\r\n")
+            suffix = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
+            lines[index] = repaired + suffix
+            continue
+
+        repaired, changed = repair_figure_caption_prefix(
+            content,
+            style=figure_caption_style,
+        )
         if changed:
             changes.append(
                 Change(
@@ -612,7 +1119,23 @@ def repair_text(
         )
     uncertain.extend(callout_uncertain)
     lines = callout_text.splitlines(keepends=True)
+    lines = normalize_source_references(
+        lines,
+        changes,
+        style=source_reference_style,
+        line_offset=frontmatter.count("\n"),
+    )
     lines = repair_figure_sources(lines, changes, uncertain)
+    lines = deduplicate_local_source_references(
+        lines,
+        changes,
+        line_offset=frontmatter.count("\n"),
+    )
+    lines = remove_redundant_leading_heading(
+        lines,
+        changes,
+        line_offset=frontmatter.count("\n"),
+    )
     lines = repair_ordered_list_spacing(lines, changes)
     lines = compact_unordered_list_spacing(
         lines,
@@ -622,6 +1145,14 @@ def repair_text(
     )
     lines = collapse_excess_blank_lines(lines, changes)
     repaired_body = "".join(lines)
+    repaired_body, joined_urls = merge_split_inline_code_urls(repaired_body)
+    if joined_urls:
+        changes.append(Change(
+            kind="url-join",
+            line=1 + frontmatter.count("\n"),
+            before=f"joined {joined_urls} coordinate-confirmed URL fragment pair(s)",
+            after="inline URL code spans merged",
+        ))
     return frontmatter + normalise_line_endings(repaired_body, newline), changes, uncertain
 
 
@@ -631,16 +1162,28 @@ def read_text_bytes(path: Path) -> tuple[bytes, str]:
     return raw, raw.decode(encoding)
 
 
-def preview(root: Path, *, callout_style: str = "obsidian-callout") -> dict[str, object]:
+def preview(
+    root: Path,
+    *,
+    callout_style: str = "obsidian-callout",
+    figure_caption_style: str = "blockquote",
+    shortcut_style: str = "preserve",
+    source_reference_style: str = "preserve",
+    include: Iterable[str] | None = None,
+) -> dict[str, object]:
+    root = root.resolve()
     files: list[dict[str, object]] = []
     total_changes = 0
     total_uncertain = 0
-    for path in markdown_files(root):
+    for path in markdown_files(root, include=include):
         raw, text = read_text_bytes(path)
         repaired, changes, uncertain = repair_text(
             text,
             str(path.relative_to(root)),
             callout_style=callout_style,
+            figure_caption_style=figure_caption_style,
+            shortcut_style=shortcut_style,
+            source_reference_style=source_reference_style,
         )
         repaired_raw = repaired.encode("utf-8-sig" if raw.startswith(b"\xef\xbb\xbf") else "utf-8")
         relative = str(path.relative_to(root)).replace("\\", "/")
@@ -666,9 +1209,13 @@ def preview(root: Path, *, callout_style: str = "obsidian-callout") -> dict[str,
         total_uncertain += len(uncertain)
     return {
         "tool": "pdf-book-to-obsidian markdown layout repair",
-        "version": "0.2.0",
+        "version": "0.5.0",
         "book_root": str(root),
         "callout_style": callout_style,
+        "figure_caption_style": figure_caption_style,
+        "shortcut_style": shortcut_style,
+        "source_reference_style": source_reference_style,
+        "scope": "selected files" if include is not None else "all content Markdown",
         "files_scanned": len(files),
         "files_changed": sum(1 for item in files if item["changed"]),
         "changes": total_changes,
@@ -736,7 +1283,11 @@ def backup_root(root: Path, destination: Path) -> Path:
             relative = path.relative_to(root)
             if destination_relative is not None and relative == destination_relative:
                 continue
-            if any(part.lower() in {".trash"} for part in relative.parts):
+            # A backup is a rollback point for the current book state, not a
+            # recursive archive of earlier rollback points.  Excluding all
+            # backup trees keeps repeated maintenance backups bounded and
+            # avoids copying historical ZIPs into every new ZIP.
+            if any(part.casefold() in {".trash", "backups"} for part in relative.parts):
                 continue
             archive.write(path, relative.as_posix())
     return destination
@@ -757,6 +1308,9 @@ def apply_repairs(root: Path, report: dict[str, object], backup: Path) -> dict[s
             text,
             str(item["relative_path"]),
             callout_style=str(report.get("callout_style") or "obsidian-callout"),
+            figure_caption_style=str(report.get("figure_caption_style") or "blockquote"),
+            shortcut_style=str(report.get("shortcut_style") or "preserve"),
+            source_reference_style=str(report.get("source_reference_style") or "preserve"),
         )
         encoded = repaired.encode("utf-8-sig" if raw.startswith(b"\xef\xbb\xbf") else "utf-8")
         path.write_bytes(encoded)
@@ -783,9 +1337,35 @@ def build_parser() -> argparse.ArgumentParser:
             help="presentation style for explicit editorial callout labels",
         )
         sub.add_argument(
+            "--figure-caption-style",
+            choices=("blockquote", "plain"),
+            default="blockquote",
+            help="presentation style for clear Figure captions",
+        )
+        sub.add_argument(
+            "--shortcut-style",
+            choices=("preserve", "inline-code"),
+            default="preserve",
+            help="presentation style for clearly identified keyboard-shortcut list items",
+        )
+        sub.add_argument(
+            "--source-reference-style",
+            choices=("preserve", "plain-blockquote"),
+            default="preserve",
+            help="presentation style for PDF source references in existing Markdown",
+        )
+        sub.add_argument(
             "--baseline-manifest",
             type=Path,
             help="optional prior generator manifest used to detect manual file drift",
+        )
+        sub.add_argument(
+            "--include",
+            action="append",
+            help=(
+                "limit the repair to a content Markdown path relative to --book-root; "
+                "repeat for multiple files"
+            ),
         )
     apply = subparsers.choices["apply"]
     apply.add_argument("--backup", required=True, type=Path)
@@ -799,7 +1379,18 @@ def main(argv: Iterable[str] | None = None) -> int:
     if not root.is_dir():
         print(f"Book root does not exist: {root}", file=sys.stderr)
         return 2
-    report = preview(root, callout_style=args.callout_style)
+    try:
+        report = preview(
+            root,
+            callout_style=args.callout_style,
+            figure_caption_style=args.figure_caption_style,
+            shortcut_style=args.shortcut_style,
+            source_reference_style=args.source_reference_style,
+            include=args.include,
+        )
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
+        return 2
     if args.baseline_manifest is not None:
         baseline_path = args.baseline_manifest.resolve()
         if not baseline_path.is_file():

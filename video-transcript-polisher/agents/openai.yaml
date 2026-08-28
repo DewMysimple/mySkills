@@ -1,4 +1,4 @@
 interface:
   display_name: "Video Transcript Polisher"
-  short_description: "Conservatively polish ASR transcripts with safe batching"
-  default_prompt: "Use $video-transcript-polisher to assess the task, wait for explicit confirmation, and then process each confirmed file once with conservative review and safe recovery."
+  short_description: "Conservatively polish ASR transcripts with semantic review"
+  default_prompt: "Use $video-transcript-polisher to assess the task, wait for explicit confirmation, process each confirmed file once, and perform semantic paragraph-quality review with long-block checks before writing."

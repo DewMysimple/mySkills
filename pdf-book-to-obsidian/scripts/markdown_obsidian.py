@@ -30,6 +30,7 @@ CALLOUT_TYPES = {
 
 CALLOUT_STYLES = {"obsidian-callout", "plain", "none"}
 MARKDOWN_BASELINES = {"obsidian", "commonmark"}
+INLINE_IMAGE_SYNTAXES = {"obsidian-wiki", "markdown"}
 
 _LABEL_RE = re.compile(
     r"^(?P<label>note|notes|tip|hint|warning|caution|important|danger|error|example)"
@@ -49,6 +50,7 @@ class CalloutLead:
     indent: str
     callout_type: str
     body: str
+    title: str = ""
 
 
 def markdown_baseline(config: dict[str, object] | None) -> str:
@@ -69,6 +71,17 @@ def callout_style(config: dict[str, object] | None) -> str:
     return value
 
 
+def inline_image_syntax(config: dict[str, object] | None) -> str:
+    """Resolve the syntax used for images embedded inside prose lines."""
+    output = (config or {}).get("output") or {}
+    value = str(output.get("inline_image_syntax") or "").strip().lower()
+    if not value:
+        return "obsidian-wiki" if markdown_baseline(config) == "obsidian" else "markdown"
+    if value not in INLINE_IMAGE_SYNTAXES:
+        raise ValueError("output.inline_image_syntax must be obsidian-wiki or markdown")
+    return value
+
+
 def parse_callout_lead(line: str) -> CalloutLead | None:
     """Parse only explicit label forms, avoiding ordinary prose such as 'Note that'."""
     raw = line.rstrip("\r\n")
@@ -86,6 +99,15 @@ def parse_callout_lead(line: str) -> CalloutLead | None:
             continue
         label_text = text[len(marker) : closing].strip()
         label = label_text.rstrip(":").strip().casefold()
+        if label in {"tips or important notes", "tips or important note"}:
+            tail = text[closing + len(marker) :]
+            if tail and not (tail[0].isspace() or tail.startswith(":")):
+                continue
+            if tail.startswith(":"):
+                tail = tail[1:].lstrip()
+            else:
+                tail = tail.lstrip()
+            return CalloutLead(indent, "NOTE", tail, label_text.rstrip(":").strip())
         if label not in CALLOUT_TYPES:
             continue
         tail = text[closing + len(marker) :]
@@ -96,6 +118,21 @@ def parse_callout_lead(line: str) -> CalloutLead | None:
         else:
             tail = tail.lstrip()
         return CalloutLead(indent, CALLOUT_TYPES[label], tail)
+
+    special_match = re.match(
+        r"^(?P<label>tips\s+or\s+important\s+notes?)\b(?P<colon>\s*:\s*)?(?P<body>.*)$",
+        text,
+        re.IGNORECASE,
+    )
+    if special_match:
+        if not special_match.group("colon") and special_match.group("body"):
+            return None
+        return CalloutLead(
+            indent,
+            "NOTE",
+            special_match.group("body").lstrip(),
+            special_match.group("label"),
+        )
 
     match = _LABEL_RE.match(text)
     if not match:
@@ -145,8 +182,9 @@ def _line_contents(text: str) -> tuple[list[str], str, bool]:
     return [line.rstrip("\r\n") for line in lines], newline, has_final_newline
 
 
-def _render_callout(callout_type: str, body: list[str]) -> list[str]:
-    rendered = [f"> [!{callout_type}]", "> "]
+def _render_callout(callout_type: str, body: list[str], title: str = "") -> list[str]:
+    suffix = f" {title}" if title else ""
+    rendered = [f"> [!{callout_type}]{suffix}", "> "]
     rendered.extend(f"> {line}" if line else "> " for line in body)
     return rendered
 
@@ -243,12 +281,12 @@ def convert_callouts_text(
             while body and not body[-1]:
                 body.pop()
 
-        output.extend(_render_callout(lead.callout_type, body))
+        output.extend(_render_callout(lead.callout_type, body, lead.title))
         changes.append({
             "kind": "callout",
             "line": index + 1 + line_offset,
             "before": line,
-            "after": f"> [!{lead.callout_type}]",
+            "after": f"> [!{lead.callout_type}]{f' {lead.title}' if lead.title else ''}",
             "callout_type": lead.callout_type,
         })
         index = end
@@ -292,6 +330,21 @@ def render_file_embed(
     """Render a local asset embed for the selected syntax baseline."""
     path_text = Path(vault_relative_path).as_posix()
     if markdown_baseline(config) == "obsidian":
+        return f"![[{path_text}]]"
+    target = _encoded_path(str(markdown_target or path_text))
+    alt = Path(path_text).stem
+    return f"![{alt}]({target})"
+
+
+def render_inline_file_embed(
+    vault_relative_path: str | Path,
+    config: dict[str, object] | None,
+    *,
+    markdown_target: str | Path | None = None,
+) -> str:
+    """Render an image that must remain inside an ordinary prose line."""
+    path_text = Path(vault_relative_path).as_posix()
+    if inline_image_syntax(config) == "obsidian-wiki":
         return f"![[{path_text}]]"
     target = _encoded_path(str(markdown_target or path_text))
     alt = Path(path_text).stem

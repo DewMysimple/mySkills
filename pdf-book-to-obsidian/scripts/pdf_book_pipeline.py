@@ -42,24 +42,30 @@ except ImportError:  # pragma: no cover - permits importing as a package.
 
 try:
     from markdown_obsidian import (
+        CALLOUT_TYPES,
         callout_style as resolve_callout_style,
         convert_callouts_text,
+        inline_image_syntax as resolve_inline_image_syntax,
         markdown_baseline as resolve_markdown_baseline,
         render_file_embed,
+        render_inline_file_embed,
         render_note_link,
     )
 except ImportError:  # pragma: no cover - permits importing as a package.
     from .markdown_obsidian import (  # type: ignore
+        CALLOUT_TYPES,
         callout_style as resolve_callout_style,
         convert_callouts_text,
+        inline_image_syntax as resolve_inline_image_syntax,
         markdown_baseline as resolve_markdown_baseline,
         render_file_embed,
+        render_inline_file_embed,
         render_note_link,
     )
 
 
 GENERATOR = "pdf-book-to-obsidian"
-VERSION = "0.4.0"
+VERSION = "0.8.0"
 RESOURCE_DIRS = ("PDF", "Config", "Reports", "Backups", "Attachment")
 DEFAULT_CHAPTER_PATTERN = re.compile(
     r"^chapter\s+(?P<number>[0-9]+|[ivxlcdm]+)\s*[:.\-–—]?\s*(?P<title>.+)$",
@@ -69,6 +75,10 @@ FIGURE_CAPTION_RE = re.compile(
     r"^Figure\s+\d+(?:\.\d+)?\s*[–—-]\s*.+$",
     re.IGNORECASE,
 )
+INLINE_IMAGE_POLICIES = {"auto", "block"}
+VISUAL_TABLE_DISCOVERY_POLICIES = {"auto", "off"}
+BOXED_CALLOUT_POLICIES = {"auto", "off"}
+ROMAN_PAGE_RE = re.compile(r"^[ivxlcdm]+$", re.IGNORECASE)
 
 
 class PipelineError(RuntimeError):
@@ -187,7 +197,7 @@ def emit_frontmatter(fields: dict[str, Any]) -> str:
 
 
 def normalise_text(text: str) -> str:
-    text = text.replace("\u00ad", "").replace("\xa0", " ").replace("\ufffd", "")
+    text = text.replace("\u00ad", "").replace("\ufeff", "").replace("\xa0", " ").replace("\ufffd", "")
     text = text.replace("\r\n", "\n").replace("\r", "\n").replace("\x00", "")
     lines = [line.rstrip() for line in text.split("\n")]
     while lines and not lines[0].strip():
@@ -205,6 +215,61 @@ def normalise_text(text: str) -> str:
             if blank_count <= 2:
                 compact.append("")
     return "\n".join(compact)
+
+
+_SPLIT_URL_SUFFIX_RE = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]*$"
+)
+
+
+def merge_split_inline_code_urls(text: str) -> str:
+    """Join only adjacent inline-code spans that clearly form one URL.
+
+    PDF extraction commonly splits a URL at a line or span boundary. The
+    protocol prefix and URL-safe suffix checks deliberately avoid joining
+    ordinary neighbouring code spans.
+    """
+    pattern = re.compile(
+        r"`(?P<prefix>https?://[^`\n]*)`\s+`(?P<suffix>[^`\n]+)`",
+        re.IGNORECASE,
+    )
+
+    def replace(match: re.Match[str]) -> str:
+        prefix = match.group("prefix")
+        suffix = match.group("suffix")
+        if not prefix.endswith(("/", "://")):
+            return match.group(0)
+        if not _SPLIT_URL_SUFFIX_RE.fullmatch(suffix):
+            return match.group(0)
+        return f"`{prefix}{suffix}`"
+
+    previous = None
+    current = text
+    for _ in range(8):
+        if current == previous:
+            break
+        previous = current
+        current = pattern.sub(replace, current)
+    return current
+
+
+_PLAIN_URL_CHAR_RE = r"[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]"
+
+
+def merge_split_plain_urls(text: str) -> str:
+    """Join a URL split at a physical PDF line boundary only at a URL edge."""
+    pattern = re.compile(
+        rf"(?P<prefix>https?://|https?://{_PLAIN_URL_CHAR_RE}*?(?:/|://))\n(?P<suffix>[A-Za-z0-9])",
+        re.IGNORECASE,
+    )
+    previous = None
+    current = text
+    for _ in range(8):
+        if current == previous:
+            break
+        previous = current
+        current = pattern.sub(lambda match: match.group("prefix") + match.group("suffix"), current)
+    return current
 
 
 def normalise_heading_text(text: str) -> str:
@@ -405,6 +470,8 @@ def default_config(book: str) -> dict[str, Any]:
             "source_reference_style": "linked-blockquote",
             "figure_caption_style": "plain",
             "image_placement": "pdf-coordinate",
+            "inline_image_policy": "auto",
+            "inline_image_syntax": "obsidian-wiki",
         },
         "table_transform": {"enabled": False, "min_rows": 2},
         "visual_tables": {"enabled": False, "regions": []},
@@ -777,12 +844,167 @@ def source_frontmatter(
     return fields
 
 
+def resolve_inline_image_policy(config: dict[str, Any] | None) -> str:
+    output = (config or {}).get("output") or {}
+    value = str(output.get("inline_image_policy") or "auto").strip().lower()
+    if value not in INLINE_IMAGE_POLICIES:
+        raise PipelineError("output.inline_image_policy must be auto or block")
+    return value
+
+
+def resolve_visual_table_discovery(config: dict[str, Any] | None) -> str:
+    """Resolve geometry-based table discovery without requiring page lists.
+
+    Existing configurations may continue to provide explicit visual-table
+    regions.  When visual tables are enabled, discovery defaults to ``auto``
+    so clear grids are not silently lost merely because a page was not
+    registered in advance.
+    """
+    settings = (config or {}).get("visual_tables") or {}
+    value = str(settings.get("discovery") or "auto").strip().lower()
+    if value not in VISUAL_TABLE_DISCOVERY_POLICIES:
+        raise PipelineError("visual_tables.discovery must be auto or off")
+    return value
+
+
+def resolve_boxed_callout_policy(config: dict[str, Any] | None) -> str:
+    """Resolve detection of clearly labelled bordered editorial boxes."""
+    output = (config or {}).get("output") or {}
+    value = str(output.get("boxed_callout_policy") or "auto").strip().lower()
+    if value not in BOXED_CALLOUT_POLICIES:
+        raise PipelineError("output.boxed_callout_policy must be auto or off")
+    return value
+
+
+def is_pdf_page_number(value: str) -> bool:
+    """Return whether text is only a printed numeric or Roman page number."""
+    token = value.strip()
+    return bool(re.fullmatch(r"\d+", token) or ROMAN_PAGE_RE.fullmatch(token))
+
+
+def page_text_lines(page: Any) -> list[dict[str, Any]]:
+    """Return text-line geometry used to detect images embedded in prose."""
+    try:
+        blocks = page.get_text("dict", sort=True).get("blocks", [])
+    except Exception:
+        return []
+    lines: list[dict[str, Any]] = []
+    for block in blocks:
+        if not isinstance(block, dict) or block.get("type", 0) != 0:
+            continue
+        for line in block.get("lines", []) or []:
+            if not isinstance(line, dict):
+                continue
+            bbox = line.get("bbox") or (0, 0, 0, 0)
+            x0, y0, x1, y1 = (float(value) for value in bbox[:4])
+            text = "".join(
+                clean_span_text(span.get("text"))
+                for span in line.get("spans", []) or []
+                if isinstance(span, dict)
+            )
+            if text.strip() and x1 > x0 and y1 > y0:
+                lines.append({"x0": x0, "y0": y0, "x1": x1, "y1": y1})
+    merged: list[dict[str, Any]] = []
+    for line in sorted(lines, key=lambda item: (item["y0"], item["x0"])):
+        if merged:
+            previous = merged[-1]
+            same_baseline = (
+                abs(line["y0"] - previous["y0"]) <= 1.0
+                and abs(line["y1"] - previous["y1"]) <= 1.0
+            )
+            gap = line["x0"] - previous["x1"]
+            max_gap = max(16.0, (line["y1"] - line["y0"]) * 2.0)
+            if same_baseline and gap <= max_gap:
+                previous["x1"] = max(previous["x1"], line["x1"])
+                previous["y0"] = min(previous["y0"], line["y0"])
+                previous["y1"] = max(previous["y1"], line["y1"])
+                continue
+        merged.append(dict(line))
+    return merged
+
+
+def classify_inline_image(
+    page: Any,
+    image: dict[str, Any],
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Classify a positioned PDF image without relying on book-specific names.
+
+    An image is an inline icon only when it overlaps one text line by a useful
+    amount and its displayed dimensions are close to that line's height. A
+    boundary or geometry ambiguity remains a block image and is reported.
+    """
+    policy = resolve_inline_image_policy(config)
+    if policy == "block":
+        return {
+            "image_role": "figure-image",
+            "image_classification": "forced-block",
+            "image_classification_reason": "inline image policy is block",
+        }
+
+    x0 = float(image.get("x0", 0.0))
+    y0 = float(image.get("y0", 0.0))
+    x1 = float(image.get("x1", 0.0))
+    y1 = float(image.get("y1", 0.0))
+    image_width = max(0.0, x1 - x0)
+    image_height = max(0.0, y1 - y0)
+    if image_width <= 0.0 or image_height <= 0.0:
+        return {
+            "image_role": "figure-image",
+            "image_classification": "ambiguous",
+            "image_classification_reason": "image has no usable display rectangle",
+        }
+
+    overlaps: list[dict[str, Any]] = []
+    for line in page_text_lines(page):
+        line_height = line["y1"] - line["y0"]
+        vertical_overlap = min(y1, line["y1"]) - max(y0, line["y0"])
+        horizontal_overlap = min(x1, line["x1"]) - max(x0, line["x0"])
+        # Ignore sub-point contact at adjacent line boundaries. It is common
+        # for PDF glyph boxes and image boxes to touch without overlapping.
+        useful_overlap = max(0.75, min(line_height, image_height) * 0.1)
+        if vertical_overlap > useful_overlap and horizontal_overlap > 0.0:
+            overlaps.append({**line, "vertical_overlap": vertical_overlap})
+
+    if not overlaps:
+        return {
+            "image_role": "figure-image",
+            "image_classification": "clear-block",
+            "image_classification_reason": "image does not overlap a text line",
+        }
+    if len(overlaps) != 1:
+        return {
+            "image_role": "figure-image",
+            "image_classification": "ambiguous",
+            "image_classification_reason": "image overlaps multiple text lines",
+        }
+
+    line = overlaps[0]
+    line_height = line["y1"] - line["y0"]
+    if image_width <= max(24.0, line_height * 3.0) and image_height <= max(24.0, line_height * 2.0):
+        return {
+            "image_role": "inline-icon",
+            "image_classification": "clear-inline",
+            "image_classification_reason": "small image overlaps one text line",
+            "inline_line_x0": line["x0"],
+            "inline_line_y0": line["y0"],
+            "inline_line_x1": line["x1"],
+            "inline_line_y1": line["y1"],
+        }
+    return {
+        "image_role": "figure-image",
+        "image_classification": "clear-block",
+        "image_classification_reason": "image overlaps text but is not line-sized",
+    }
+
+
 def extract_images(
     document: Any,
     chapters: Iterable[Chapter],
     attachment_root: Path,
     book: str,
     link_root: Path | None = None,
+    config: dict[str, Any] | None = None,
 ) -> tuple[dict[int, list[dict[str, Any]]], list[dict[str, Any]]]:
     by_page: dict[int, list[dict[str, Any]]] = {}
     records: list[dict[str, Any]] = []
@@ -842,6 +1064,9 @@ def extract_images(
                     "bytes": len(data),
                     "sha256": sha256_bytes(data),
                 }
+                item.update(classify_inline_image(page, item, config))
+                if item.get("image_role") == "inline-icon":
+                    item["placement"] = "inline-text"
                 by_page.setdefault(page_number, []).append(item)
                 records.append({key: value for key, value in item.items() if key != "data"})
     return by_page, records
@@ -882,19 +1107,43 @@ def styled_span_text(span: dict[str, Any], *, inline_code: bool = False) -> str:
     return text
 
 
-def join_line_spans(spans: list[dict[str, Any]], *, inline_code: bool = False) -> tuple[str, str, float, float]:
+def join_line_spans(
+    spans: list[dict[str, Any]],
+    *,
+    inline_code: bool = False,
+    inline_markers: list[dict[str, Any]] | None = None,
+) -> tuple[str, str, float, float]:
     formatted: list[str] = []
     raw_parts: list[str] = []
     previous_end: float | None = None
     previous_raw = ""
     first_x = 0.0
     last_x = 0.0
+    markers = sorted(inline_markers or [], key=lambda item: (float(item.get("x0", 0.0)), int(item.get("xref", 0))))
+    marker_index = 0
+
+    def append_marker(marker: dict[str, Any]) -> None:
+        """Keep a small image inside the prose line instead of making a block."""
+        if formatted and not str(formatted[-1]).endswith((" ", "\t")):
+            formatted.append(" ")
+        formatted.append(str(marker["inline_markdown"]))
+        formatted.append(" ")
+        if raw_parts and not str(raw_parts[-1]).endswith((" ", "\t")):
+            raw_parts.append(" ")
+        raw_parts.append(" ")
+
     for index, span in enumerate(spans):
         raw = clean_span_text(span.get("text"))
         if not raw:
             continue
         bbox = span.get("bbox") or (0, 0, 0, 0)
         x0, x1 = float(bbox[0]), float(bbox[2])
+        while marker_index < len(markers) and float(markers[marker_index].get("x0", 0.0)) <= x0:
+            append_marker(markers[marker_index])
+            marker_index += 1
+            previous_end = float(markers[marker_index - 1].get("x1", x0))
+            previous_raw = " "
+            last_x = previous_end
         if index == 0 or not formatted:
             first_x = x0
         needs_space = False
@@ -912,7 +1161,270 @@ def join_line_spans(spans: list[dict[str, Any]], *, inline_code: bool = False) -
         previous_end = x1
         previous_raw = raw
         last_x = x1
-    return "".join(formatted), "".join(raw_parts), first_x, last_x
+    while marker_index < len(markers):
+        append_marker(markers[marker_index])
+        marker_index += 1
+        last_x = float(markers[marker_index - 1].get("x1", last_x))
+    formatted_text = "".join(formatted)
+    if markers:
+        # PDF text spans often retain a trailing space on one side of an
+        # inline icon and a leading space on the other.  Collapse only the
+        # whitespace on a line that contains an icon; ordinary prose keeps
+        # its existing extraction result.
+        formatted_text = re.sub(r"[ \t]{2,}", " ", formatted_text)
+    return formatted_text, "".join(raw_parts), first_x, last_x
+
+
+def merge_inline_image_fragments(
+    entries: list[dict[str, Any]],
+    inline_images: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Join prose fragments split by an inline PDF image.
+
+    PDF text extraction commonly returns the words on either side of a small
+    inline UI icon as separate text blocks.  The icon is not necessarily
+    inside either block's bounding box, so ``extract_page_blocks`` cannot
+    safely insert it while processing an individual block.  This pass joins
+    only same-baseline, ordinary prose fragments when the image geometry
+    proves that the icon occupies their horizontal gap.
+    """
+
+    def images_between(first: dict[str, Any], second: dict[str, Any]) -> list[dict[str, Any]]:
+        first_y0 = float(first.get("y0", 0.0))
+        first_y1 = float(first.get("y1", 0.0))
+        second_y0 = float(second.get("y0", 0.0))
+        second_y1 = float(second.get("y1", 0.0))
+        if (
+            abs(first_y0 - second_y0) > 1.0
+            or abs(first_y1 - second_y1) > 1.0
+        ):
+            return []
+        first_x1 = float(first.get("x1", 0.0))
+        second_x0 = float(second.get("x0", 0.0))
+        gap = second_x0 - first_x1
+        line_height = max(first_y1 - first_y0, second_y1 - second_y0, 1.0)
+        if gap < -0.75 or gap > max(16.0, line_height * 2.0):
+            return []
+        matches: list[dict[str, Any]] = []
+        for image in inline_images:
+            image_y0 = float(image.get("inline_line_y0", image.get("y0", 0.0)))
+            image_y1 = float(image.get("inline_line_y1", image.get("y1", 0.0)))
+            image_x0 = float(image.get("x0", 0.0))
+            image_x1 = float(image.get("x1", 0.0))
+            if (
+                abs(image_y0 - first_y0) <= 1.0
+                and abs(image_y1 - first_y1) <= 1.0
+                and image_x1 > image_x0
+                and image_x0 <= second_x0 + 0.75
+                and image_x1 >= first_x1 - 0.75
+            ):
+                matches.append(image)
+        return sorted(matches, key=lambda item: (float(item.get("x0", 0.0)), int(item.get("xref", 0))))
+
+    def can_merge(first: dict[str, Any], second: dict[str, Any]) -> bool:
+        if any(
+            first.get(key) or second.get(key)
+            for key in (
+                "is_code",
+                "code_candidate",
+                "has_bullet_prefix",
+                "is_bullet_only",
+                "heading_level",
+                "is_running_header",
+                "is_chapter_title",
+            )
+        ):
+            return False
+        return bool(images_between(first, second))
+
+    merged: list[dict[str, Any]] = []
+    index = 0
+    while index < len(entries):
+        current = dict(entries[index])
+        while index + 1 < len(entries) and can_merge(current, entries[index + 1]):
+            following = entries[index + 1]
+            gap_images = images_between(current, following)
+            formatted_parts = [str(current.get("text", "")).rstrip()]
+            raw_parts = [str(current.get("raw", current.get("raw_text", ""))).rstrip()]
+            plain_parts = [str(current.get("plain", "")).rstrip()]
+            spans = list(current.get("spans", []) or [])
+            for image in gap_images:
+                marker = str(image.get("inline_markdown") or "").strip()
+                if marker:
+                    formatted_parts.extend([" ", marker, " "])
+                spans.extend(list(image.get("spans", []) or []))
+            formatted_parts.append(str(following.get("text", "")).lstrip())
+            raw_parts.append(str(following.get("raw", following.get("raw_text", ""))).lstrip())
+            plain_parts.append(str(following.get("plain", "")).lstrip())
+            current["text"] = "".join(formatted_parts)
+            current["raw"] = " ".join(part for part in raw_parts if part)
+            current["raw_text"] = " ".join(
+                part for part in (
+                    str(current.get("raw_text", "")).rstrip(),
+                    str(following.get("raw_text", following.get("raw", ""))).lstrip(),
+                )
+                if part
+            )
+            current["plain"] = normalise_heading_text(" ".join(part for part in plain_parts if part))
+            current["x0"] = min(float(current.get("x0", 0.0)), float(following.get("x0", 0.0)))
+            current["x1"] = max(float(current.get("x1", 0.0)), float(following.get("x1", 0.0)))
+            current["y0"] = min(float(current.get("y0", 0.0)), float(following.get("y0", 0.0)))
+            current["y1"] = max(float(current.get("y1", 0.0)), float(following.get("y1", 0.0)))
+            current["y"] = min(float(current.get("y", current["y0"])), float(following.get("y", current["y0"])))
+            current["index"] = min(int(current.get("index", 0)), int(following.get("index", 0)))
+            current["spans"] = spans
+            for key in ("is_code", "is_inline_code", "code_candidate", "is_bullet_only", "has_bullet_prefix"):
+                current[key] = False
+            current["heading_level"] = None
+            index += 1
+        merged.append(current)
+        index += 1
+    return merged
+
+
+def merge_inline_pdf_text_blocks(
+    blocks: list[dict[str, Any]],
+    inline_images: list[dict[str, Any]],
+) -> None:
+    """Merge PDF text lines separated by a classified inline image.
+
+    A PDF producer may store the text before and after an icon in different
+    text blocks.  Merging only the final Markdown entries is too late for a
+    block that also contains the following wrapped line.  This pass therefore
+    joins the source line records first, while retaining their original spans
+    and coordinates for the normal renderer.
+    """
+    if not inline_images:
+        return
+
+    records: list[dict[str, Any]] = []
+    block_line_counts: dict[int, int] = {}
+    for block_index, block in enumerate(blocks):
+        if not isinstance(block, dict) or block.get("type", 0) != 0:
+            continue
+        source_lines = block.get("lines", []) or []
+        text_lines = 0
+        for line_index, line in enumerate(source_lines):
+            if not isinstance(line, dict):
+                continue
+            bbox = line.get("bbox") or (0, 0, 0, 0)
+            x0, y0, x1, y1 = (float(value) for value in bbox[:4])
+            text = "".join(
+                clean_span_text(span.get("text"))
+                for span in line.get("spans", []) or []
+                if isinstance(span, dict)
+            )
+            if not text.strip() or x1 <= x0 or y1 <= y0:
+                continue
+            text_lines += 1
+            records.append({
+                "block_index": block_index,
+                "line_index": line_index,
+                "line": line,
+                "x0": x0,
+                "y0": y0,
+                "x1": x1,
+                "y1": y1,
+                "spans": list(line.get("spans", []) or []),
+            })
+        if text_lines:
+            block_line_counts[block_index] = text_lines
+
+    active = list(records)
+    removed_line_ids: set[int] = set()
+    synthetic_by_block: dict[int, list[dict[str, Any]]] = {}
+
+    def same_baseline(first: dict[str, Any], second: dict[str, Any]) -> bool:
+        return (
+            abs(float(first["y0"]) - float(second["y0"])) <= 1.0
+            and abs(float(first["y1"]) - float(second["y1"])) <= 1.0
+        )
+
+    def image_between(
+        image: dict[str, Any],
+        first: dict[str, Any],
+        second: dict[str, Any],
+    ) -> bool:
+        if not same_baseline(first, second):
+            return False
+        first_x1 = float(first["x1"])
+        second_x0 = float(second["x0"])
+        gap = second_x0 - first_x1
+        line_height = max(float(first["y1"]) - float(first["y0"]), 1.0)
+        if gap < -0.75 or gap > max(16.0, line_height * 2.0):
+            return False
+        image_x0 = float(image.get("x0", 0.0))
+        image_x1 = float(image.get("x1", 0.0))
+        return (
+            image_x1 > image_x0
+            and image_x0 <= second_x0 + 0.75
+            and image_x1 >= first_x1 - 0.75
+        )
+
+    for image in sorted(
+        inline_images,
+        key=lambda item: (float(item.get("y0", 0.0)), float(item.get("x0", 0.0))),
+    ):
+        candidates = sorted(
+            active,
+            key=lambda item: (float(item["y0"]), float(item["x0"]), int(item["block_index"])),
+        )
+        pair: tuple[dict[str, Any], dict[str, Any]] | None = None
+        for first, second in zip(candidates, candidates[1:]):
+            if image_between(image, first, second):
+                pair = (first, second)
+                break
+        if pair is None:
+            continue
+
+        first, second = pair
+        owner_candidates = (first["block_index"], second["block_index"])
+        owner = max(
+            owner_candidates,
+            key=lambda index: (block_line_counts.get(index, 0), -index),
+        )
+        synthetic_line = {
+            "bbox": (
+                min(float(first["x0"]), float(second["x0"])),
+                min(float(first["y0"]), float(second["y0"])),
+                max(float(first["x1"]), float(second["x1"])),
+                max(float(first["y1"]), float(second["y1"])),
+            ),
+            "spans": [*first["spans"], *second["spans"]],
+        }
+        synthetic_record = {
+            "block_index": owner,
+            "line_index": min(int(first["line_index"]), int(second["line_index"])),
+            "line": synthetic_line,
+            "x0": synthetic_line["bbox"][0],
+            "y0": synthetic_line["bbox"][1],
+            "x1": synthetic_line["bbox"][2],
+            "y1": synthetic_line["bbox"][3],
+            "spans": synthetic_line["spans"],
+        }
+        removed_line_ids.update({id(first["line"]), id(second["line"])})
+        active.remove(first)
+        active.remove(second)
+        active.append(synthetic_record)
+        synthetic_by_block.setdefault(owner, []).append(synthetic_line)
+
+    if not removed_line_ids:
+        return
+    for block_index, block in enumerate(blocks):
+        if not isinstance(block, dict) or "lines" not in block:
+            continue
+        remaining = [
+            line for line in block.get("lines", []) or []
+            if id(line) not in removed_line_ids
+        ]
+        remaining.extend(synthetic_by_block.get(block_index, []))
+        remaining.sort(
+            key=lambda line: (
+                float((line.get("bbox") or (0, 0, 0, 0))[1]),
+                float((line.get("bbox") or (0, 0, 0, 0))[0]),
+            )
+        )
+        block["lines"] = remaining
 
 
 def normalise_heading_lookup(value: str) -> str:
@@ -982,10 +1494,12 @@ def extract_page_blocks(
     code_min_chars: int = 60,
     known_heading_titles: set[str] | None = None,
     skip_regions: list[tuple[float, float]] | None = None,
+    inline_images: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     blocks = page.get_text("dict", sort=True).get("blocks", [])
     entries: list[dict[str, Any]] = []
     skip_regions = skip_regions or []
+    merge_inline_pdf_text_blocks(blocks, inline_images or [])
     for block_index, block in enumerate(blocks):
         lines = block.get("lines", []) if isinstance(block, dict) else []
         if not lines:
@@ -997,7 +1511,24 @@ def extract_page_blocks(
         line_entries: list[dict[str, Any]] = []
         for line in lines:
             spans = line.get("spans", [])
-            formatted, raw, x0, x1 = join_line_spans(spans, inline_code=code_enabled)
+            line_bbox = line.get("bbox") or (0, 0, 0, 0)
+            line_y0, line_y1 = float(line_bbox[1]), float(line_bbox[3])
+            markers = []
+            for image in inline_images or []:
+                if abs(float(image.get("inline_line_y0", -10000.0)) - line_y0) > 1.0:
+                    continue
+                if abs(float(image.get("inline_line_y1", -10000.0)) - line_y1) > 1.0:
+                    continue
+                image_x0 = float(image.get("x0", 0.0))
+                image_x1 = float(image.get("x1", 0.0))
+                horizontal_overlap = min(image_x1, float(line_bbox[2])) - max(image_x0, float(line_bbox[0]))
+                if horizontal_overlap > max(0.75, (image_x1 - image_x0) * 0.05):
+                    markers.append(image)
+            formatted, raw, x0, x1 = join_line_spans(
+                spans,
+                inline_code=code_enabled,
+                inline_markers=markers,
+            )
             if not formatted.strip():
                 continue
             line_entries.append({
@@ -1042,13 +1573,26 @@ def extract_page_blocks(
             elif has_bullet_prefix:
                 block_text = " ".join(item["text"].strip() for item in group)
             else:
-                pieces: list[str] = []
-                for item_index, item in enumerate(group):
-                    if item_index:
-                        previous_raw = group[item_index - 1]["raw"]
-                        pieces.append("" if previous_raw.endswith("\u00ad") else " ")
-                    pieces.append(item["text"])
-                block_text = "".join(pieces)
+                has_inline_marker = any(
+                    marker.get("inline_markdown") and marker["inline_markdown"] in item["text"]
+                    for item in group
+                    for marker in (inline_images or [])
+                )
+                if has_inline_marker:
+                    # Wrapped lines around a UI icon may carry whitespace at
+                    # both the end of the previous line and the start of the
+                    # next one. Strip only this icon-containing paragraph's
+                    # line boundaries so the rendered sentence has stable
+                    # spacing without changing unrelated PDF text.
+                    block_text = " ".join(item["text"].strip() for item in group)
+                else:
+                    pieces: list[str] = []
+                    for item_index, item in enumerate(group):
+                        if item_index:
+                            previous_raw = group[item_index - 1]["raw"]
+                            pieces.append("" if previous_raw.endswith("\u00ad") else " ")
+                        pieces.append(item["text"])
+                    block_text = "".join(pieces)
             plain_line = normalise_heading_lookup(plain_text)
             heading_level = (heading_levels or {}).get(plain_line)
             sizes = [float(span.get("size") or 0.0) for item in group for span in item["spans"] if span.get("size")]
@@ -1062,6 +1606,8 @@ def extract_page_blocks(
             entries.append({
                 "y": first_y,
                 "x": float(group[0]["x0"]),
+                "x0": float(group[0]["x0"]),
+                "x1": float(group[-1]["x1"]),
                 "y0": first_y,
                 "y1": float(group[-1]["y1"]),
                 "index": block_index,
@@ -1082,7 +1628,7 @@ def extract_page_blocks(
         known_heading_titles.add(normalise_heading_lookup(chapter_title))
     for entry in entries:
         plain = normalise_heading_text(str(entry["plain"]))
-        running_match = re.match(r"^(?P<title>.+?)\s+[0-9]+$", plain)
+        running_match = re.match(r"^(?P<title>.+?)\s+(?P<number>(?:[0-9]+|[ivxlcdm]+))$", plain, re.IGNORECASE)
         if float(entry["y"]) < 60.0 and running_match:
             if normalise_heading_lookup(running_match.group("title")) in known_heading_titles:
                 entry["is_running_header"] = True
@@ -1113,6 +1659,7 @@ def extract_page_blocks(
                     continue
             merged_entries.append(entry)
         entries = merged_entries
+    entries = merge_inline_image_fragments(entries, inline_images or [])
     if chapter_title:
         target_title = normalise_heading_lookup(chapter_title)
         for start_index, candidate in enumerate(entries[:6]):
@@ -1172,7 +1719,7 @@ def page_markdown_from_spans(
             continue
         plain_line = str(entry["plain"]).strip()
         near_page_edge = page_height and (entry["y"] <= page_height * 0.2 or entry["y"] >= page_height * 0.8)
-        if plain_line.isdigit() and near_page_edge:
+        if is_pdf_page_number(plain_line) and near_page_edge:
             continue
         if chapter_title and plain_line.lower().startswith("chapter ") and chapter_title.lower() in plain_line.lower() and not entry["is_code"]:
             continue
@@ -1189,12 +1736,16 @@ def page_markdown_from_spans(
         rendered.append(line_text)
     joined = "\n\n".join(rendered)
     joined_lines = compact_unordered_list_spacing(joined.splitlines(keepends=True))
-    page_text = normalise_text("".join(joined_lines))
+    page_text = merge_split_plain_urls(
+        merge_split_inline_code_urls(normalise_text("".join(joined_lines)))
+    )
     try:
         selected_callout_style = resolve_callout_style(config)
     except ValueError as exc:
         raise PipelineError(str(exc)) from exc
     page_text, _, _ = convert_callouts_text(page_text, style=selected_callout_style)
+    page_text = merge_split_inline_code_urls(page_text)
+    page_text = merge_split_plain_urls(page_text)
     return page_text
 
 
@@ -1208,6 +1759,331 @@ def visual_table_specs(config: dict[str, Any]) -> list[dict[str, Any]]:
         return []
     regions = settings.get("regions") or []
     return [item for item in regions if isinstance(item, dict)]
+
+
+def _drawn_grid_segments(page: Any) -> tuple[list[tuple[float, float, float]], list[tuple[float, float, float]]]:
+    """Return horizontal and vertical line segments from the PDF drawing layer."""
+    horizontal: list[tuple[float, float, float]] = []
+    vertical: list[tuple[float, float, float]] = []
+    try:
+        drawings = page.get_drawings()
+    except Exception:
+        return horizontal, vertical
+    for drawing in drawings:
+        for item in drawing.get("items", []) if isinstance(drawing, dict) else []:
+            if not item or item[0] != "l" or len(item) < 3:
+                continue
+            first = point_xy(item[1])
+            second = point_xy(item[2])
+            if first is None or second is None:
+                continue
+            x1, y1 = first
+            x2, y2 = second
+            if abs(y1 - y2) <= 1.0 and abs(x2 - x1) >= 30.0:
+                horizontal.append((min(x1, x2), max(x1, x2), (y1 + y2) / 2.0))
+            elif abs(x1 - x2) <= 1.0 and abs(y2 - y1) >= 12.0:
+                vertical.append((x1, min(y1, y2), max(y1, y2)))
+    return horizontal, vertical
+
+
+def _horizontal_grid_boundaries(
+    page: Any,
+    horizontal: list[tuple[float, float, float]],
+) -> list[dict[str, float]]:
+    """Cluster long horizontal lines and ignore the repeated running rule."""
+    if not horizontal:
+        return []
+    page_width = float(getattr(page.rect, "width", 0.0) or 0.0)
+    by_y: dict[float, list[tuple[float, float]]] = {}
+    for y in cluster_positions((item[2] for item in horizontal), 1.5):
+        segments = [
+            (x0, x1)
+            for x0, x1, segment_y in horizontal
+            if abs(segment_y - y) <= 1.5
+        ]
+        if segments:
+            by_y[y] = segments
+    result: list[dict[str, float]] = []
+    for y, segments in sorted(by_y.items()):
+        # The page header rule is a long line but is not a table boundary.
+        if y <= 60.0:
+            continue
+        x0 = min(segment[0] for segment in segments)
+        x1 = max(segment[1] for segment in segments)
+        if x1 - x0 < max(160.0, page_width * 0.45):
+            continue
+        result.append({"y": y, "x0": x0, "x1": x1})
+    return result
+
+
+def _grid_span_matches(first: dict[str, float], second: dict[str, float]) -> bool:
+    overlap = min(first["x1"], second["x1"]) - max(first["x0"], second["x0"])
+    width = min(first["x1"] - first["x0"], second["x1"] - second["x0"])
+    return (
+        abs(first["x0"] - second["x0"]) <= 12.0
+        and abs(first["x1"] - second["x1"]) <= 12.0
+        and overlap >= max(120.0, width * 0.82)
+    )
+
+
+def _grid_runs(
+    boundaries: list[dict[str, float]],
+    vertical: list[tuple[float, float, float]] | None = None,
+) -> list[list[dict[str, float]]]:
+    """Group boundaries that describe one table rather than unrelated lines."""
+    runs: list[list[dict[str, float]]] = []
+    current: list[dict[str, float]] = []
+    for boundary in boundaries:
+        if not current:
+            current = [boundary]
+            continue
+        previous = current[-1]
+        gap = boundary["y"] - previous["y"]
+        has_vertical_bridge = any(
+            segment_y0 <= previous["y"] + 3.0
+            and segment_y1 >= boundary["y"] - 3.0
+            and min(previous["x1"], boundary["x1"]) - max(previous["x0"], boundary["x0"]) >= 120.0
+            for _, segment_y0, segment_y1 in vertical or []
+        )
+        continues_grid = gap <= 35.0 or has_vertical_bridge
+        if gap <= 90.0 and continues_grid and _grid_span_matches(previous, boundary):
+            current.append(boundary)
+        else:
+            if len(current) >= 3:
+                runs.append(current)
+            current = [boundary]
+    if len(current) >= 3:
+        runs.append(current)
+    return runs
+
+
+def _grid_columns(
+    vertical: list[tuple[float, float, float]],
+    run: list[dict[str, float]],
+) -> list[float]:
+    y0 = run[0]["y"]
+    y1 = run[-1]["y"]
+    span = y1 - y0
+    candidates = [
+        (x, segment_y1 - segment_y0)
+        for x, segment_y0, segment_y1 in vertical
+        if segment_y1 - segment_y0 >= 8.0
+        and segment_y1 >= y0 - 3.0
+        and segment_y0 <= y1 + 3.0
+        and run[0]["x0"] - 6.0 <= x <= run[0]["x1"] + 6.0
+    ]
+    positions = cluster_positions((x for x, _ in candidates), 3.0)
+    stable: list[float] = []
+    for position in positions:
+        matching = [length for candidate, length in candidates if abs(candidate - position) <= 3.0]
+        required_repeats = 1 if any(length >= span * 0.55 for length in matching) else 2
+        repeats = len(matching)
+        if repeats >= required_repeats:
+            stable.append(position)
+    return stable
+
+
+def _grid_text_rows(
+    page: Any,
+    run: list[dict[str, float]],
+    columns: list[float],
+) -> tuple[list[dict[str, Any]], int, int]:
+    """Place PDF text lines into detected grid cells."""
+    rows: list[dict[str, Any]] = []
+    text_lines = 0
+    monospace_chars = 0
+    all_chars = 0
+    boundaries = [item["y"] for item in run]
+    x0 = run[0]["x0"] - 2.0
+    x1 = run[0]["x1"] + 2.0
+    y0 = boundaries[0] - 2.0
+    y1 = boundaries[-1] + 2.0
+    cells_by_row: list[list[list[str]]] = [
+        [[] for _ in range(len(columns) - 1)]
+        for _ in range(len(boundaries) - 1)
+    ]
+    for block in page.get_text("dict", sort=True).get("blocks", []):
+        for line in block.get("lines", []) if isinstance(block, dict) else []:
+            bbox = line.get("bbox") or (0, 0, 0, 0)
+            line_x0, line_y0, line_x1, line_y1 = (float(value) for value in bbox[:4])
+            center_y = (line_y0 + line_y1) / 2.0
+            if line_x1 < x0 or line_x0 > x1 or center_y < y0 or center_y > y1:
+                continue
+            text = line_cell_text(line)
+            if not text:
+                continue
+            row_index = next(
+                (
+                    index
+                    for index in range(len(boundaries) - 1)
+                    if boundaries[index] - 1.5 <= center_y < boundaries[index + 1] + 1.5
+                ),
+                None,
+            )
+            column_index = next(
+                (
+                    index
+                    for index in range(len(columns) - 1)
+                    if columns[index] - 1.5 <= line_x0 < columns[index + 1] + 1.5
+                ),
+                None,
+            )
+            if row_index is None or column_index is None:
+                continue
+            cells_by_row[row_index][column_index].append(text)
+            text_lines += 1
+            for span in line.get("spans", []) or []:
+                span_text = clean_span_text(span.get("text"))
+                all_chars += len(span_text)
+                if span_is_monospace(span):
+                    monospace_chars += len(span_text)
+    for row_index, cells in enumerate(cells_by_row):
+        values = [" ".join(cell).strip() for cell in cells]
+        if any(values):
+            rows.append({"anchor": boundaries[row_index], "cells": values})
+    return rows, monospace_chars, all_chars
+
+
+def _grid_overlaps_image(page: Any, region: tuple[float, float]) -> bool:
+    """Reject text-only table reconstruction when cells contain images."""
+    y0, y1 = region
+    try:
+        images = page.get_images(full=True)
+    except Exception:
+        return False
+    for image in images:
+        try:
+            xref = int(image[0])
+            rects = page.get_image_rects(xref)
+        except Exception:
+            continue
+        for rect in rects:
+            if float(rect.y0) < y1 and float(rect.y1) > y0:
+                return True
+    return False
+
+
+def discover_visual_tables(
+    document: Any,
+    config: dict[str, Any],
+    occupied_regions: dict[int, list[tuple[float, float]]] | None = None,
+) -> list[dict[str, Any]]:
+    """Find high-confidence drawn tables without book-specific page entries.
+
+    This detector deliberately rejects one-column boxes, code-like regions,
+    missing headers, and sparse grids.  Rejected candidates are returned in
+    the audit list so an Agent can inspect them instead of silently losing
+    the structure.
+    """
+    settings = config.get("visual_tables") or {}
+    if not bool(settings.get("enabled", False)) or resolve_visual_table_discovery(config) == "off":
+        return []
+    min_rows = max(1, int(settings.get("min_rows", 2)))
+    occupied_regions = occupied_regions or {}
+    candidates: list[dict[str, Any]] = []
+    for page_number in range(1, int(document.page_count) + 1):
+        page = document[page_number - 1]
+        horizontal, vertical = _drawn_grid_segments(page)
+        boundaries = _horizontal_grid_boundaries(page, horizontal)
+        for run_index, run in enumerate(_grid_runs(boundaries, vertical), start=1):
+            region = (run[0]["y"] - 2.0, run[-1]["y"] + 2.0)
+            if any(
+                region[0] < existing[1] and region[1] > existing[0]
+                for existing in occupied_regions.get(page_number, [])
+            ):
+                continue
+            columns = _grid_columns(vertical, run)
+            base = {
+                "id": f"auto-visual-table-p{page_number:04d}-{run_index}",
+                "start_page": page_number,
+                "end_page": page_number,
+                "headers": [],
+                "rows": [],
+                "page_regions": {page_number: region},
+                "y": region[0],
+                "detection": "geometry-auto",
+                "columns": columns,
+            }
+            if _grid_overlaps_image(page, region):
+                candidates.append({
+                    **base,
+                    "status": "skipped",
+                    "reason": "image-overlap-ambiguous-table-cells",
+                })
+                continue
+            if len(columns) < 3:
+                candidates.append({**base, "status": "skipped", "reason": "only-one-column-box-or-unstable-column-lines"})
+                continue
+            rows, monospace_chars, all_chars = _grid_text_rows(page, run, columns)
+            base["rows"] = [row["cells"] for row in rows]
+            if len(rows) < min_rows + 1:
+                candidates.append({**base, "status": "skipped", "reason": "missing-header-or-minimum-data-rows"})
+                continue
+            headers = rows[0]["cells"]
+            base["headers"] = headers
+            if len(headers) != len(columns) - 1 or sum(bool(cell) for cell in headers) < len(headers):
+                candidates.append({**base, "status": "skipped", "reason": "missing-explicit-header-or-stable-columns"})
+                continue
+            if all_chars and monospace_chars / all_chars >= 0.60:
+                candidates.append({**base, "status": "skipped", "reason": "code-like-text-region"})
+                continue
+            data_rows = [row["cells"] for row in rows[1:]]
+            if any(len(row) != len(headers) or not any(cell for cell in row) for row in data_rows):
+                candidates.append({**base, "status": "skipped", "reason": "unstable-column-count-or-empty-data-row"})
+                continue
+            lines = [
+                "| " + " | ".join(escape_table_cell(header) for header in headers) + " |",
+                "| " + " | ".join("---" for _ in headers) + " |",
+            ]
+            lines.extend(
+                "| " + " | ".join(escape_table_cell(cell) for cell in row) + " |"
+                for row in data_rows
+            )
+            candidates.append({
+                **base,
+                "status": "converted",
+                "headers": headers,
+                "rows": data_rows,
+                "markdown": "\n".join(lines),
+                "confidence": "high",
+                "reason": "closed-grid-with-explicit-header-and-stable-cell-text",
+            })
+    return merge_discovered_visual_tables(candidates)
+
+
+def merge_discovered_visual_tables(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge adjacent auto-detected pages that repeat the same table header."""
+    merged: list[dict[str, Any]] = []
+    for candidate in sorted(candidates, key=lambda item: (int(item["start_page"]), float(item.get("y", 0.0)))):
+        if (
+            candidate.get("status") == "converted"
+            and merged
+            and merged[-1].get("status") == "converted"
+            and int(merged[-1]["end_page"]) + 1 == int(candidate["start_page"])
+            and [normalise_heading_lookup(str(cell)) for cell in merged[-1].get("headers", [])]
+            == [normalise_heading_lookup(str(cell)) for cell in candidate.get("headers", [])]
+            and len(merged[-1].get("columns", [])) == len(candidate.get("columns", []))
+            and all(
+                abs(float(left) - float(right)) <= 12.0
+                for left, right in zip(merged[-1].get("columns", []), candidate.get("columns", []))
+            )
+        ):
+            merged[-1]["end_page"] = candidate["end_page"]
+            merged[-1]["rows"].extend(candidate.get("rows", []))
+            merged[-1]["page_regions"].update(candidate.get("page_regions", {}))
+            merged[-1]["markdown"] = "\n".join(
+                [
+                    "| " + " | ".join(escape_table_cell(header) for header in merged[-1]["headers"]) + " |",
+                    "| " + " | ".join("---" for _ in merged[-1]["headers"]) + " |",
+                    *(
+                        "| " + " | ".join(escape_table_cell(cell) for cell in row) + " |"
+                        for row in merged[-1]["rows"]
+                    ),
+                ]
+            )
+            continue
+        merged.append(candidate)
+    return merged
 
 
 def line_cell_text(line: dict[str, Any]) -> str:
@@ -1430,7 +2306,153 @@ def extract_visual_tables(document: Any, config: dict[str, Any]) -> tuple[list[d
         tables.append(table)
         for page_number, region in page_regions.items():
             skip_regions.setdefault(page_number, []).append(region)
+    if bool((config.get("visual_tables") or {}).get("enabled", False)):
+        discovered = discover_visual_tables(document, config, skip_regions)
+        tables.extend(discovered)
+        for table in discovered:
+            if table.get("status") != "converted":
+                continue
+            for page_number, region in (table.get("page_regions") or {}).items():
+                skip_regions.setdefault(int(page_number), []).append(
+                    (float(region[0]), float(region[1]))
+                )
     return tables, skip_regions
+
+
+def boxed_callout_label(text: str) -> tuple[str, str] | None:
+    """Return a supported callout type and preserved title for a box label."""
+    label = re.sub(r"[*_`]+", "", text).strip()
+    label = re.sub(r"\s+", " ", label).rstrip(":").strip()
+    normalized = label.casefold()
+    if normalized in {"tips or important notes", "tips or important note"}:
+        return "NOTE", label
+    key = normalized
+    if key in CALLOUT_TYPES:
+        callout_type = CALLOUT_TYPES[key]
+        return callout_type, label if key not in {callout_type.casefold()} else ""
+    if key.endswith("s") and key[:-1] in CALLOUT_TYPES:
+        callout_type = CALLOUT_TYPES[key[:-1]]
+        return callout_type, label if key[:-1] != callout_type.casefold() else ""
+    return None
+
+
+def _bordered_box_rects(page: Any) -> list[tuple[float, float, float, float]]:
+    """Recover rounded unfilled box fragments from PDF drawing objects."""
+    rects: list[tuple[float, float, float, float]] = []
+    try:
+        drawings = page.get_drawings()
+    except Exception:
+        return rects
+    for drawing in drawings:
+        rect = drawing.get("rect") if isinstance(drawing, dict) else None
+        items = drawing.get("items", []) if isinstance(drawing, dict) else []
+        if rect is None or drawing.get("fill") is not None:
+            continue
+        if not any(item and item[0] == "c" for item in items):
+            continue
+        if rect.width < 180.0 or rect.height < 20.0 or rect.height > 180.0:
+            continue
+        rects.append((float(rect.x0), float(rect.y0), float(rect.x1), float(rect.y1)))
+    return rects
+
+
+def _merge_bordered_box_rects(
+    rects: list[tuple[float, float, float, float]],
+) -> list[tuple[float, float, float, float]]:
+    merged: list[list[float]] = []
+    for rect in sorted(rects, key=lambda item: (item[1], item[0])):
+        if not merged:
+            merged.append(list(rect))
+            continue
+        previous = merged[-1]
+        same_horizontal = abs(previous[0] - rect[0]) <= 10.0 and abs(previous[2] - rect[2]) <= 10.0
+        overlapping = rect[1] <= previous[3] + 4.0 and rect[3] >= previous[1] - 4.0
+        if same_horizontal and overlapping:
+            previous[0] = min(previous[0], rect[0])
+            previous[1] = min(previous[1], rect[1])
+            previous[2] = max(previous[2], rect[2])
+            previous[3] = max(previous[3], rect[3])
+        else:
+            merged.append(list(rect))
+    return [tuple(item) for item in merged]
+
+
+def _box_text_lines(page: Any, rect: tuple[float, float, float, float]) -> list[str]:
+    x0, y0, x1, y1 = rect
+    lines: list[tuple[float, str]] = []
+    for block in page.get_text("dict", sort=True).get("blocks", []):
+        for line in block.get("lines", []) if isinstance(block, dict) else []:
+            bbox = line.get("bbox") or (0, 0, 0, 0)
+            line_x0, line_y0, line_x1, line_y1 = (float(value) for value in bbox[:4])
+            if line_x0 < x0 + 4.0 or line_x1 > x1 - 4.0 or line_y0 < y0 + 2.0 or line_y1 > y1 - 2.0:
+                continue
+            text = line_cell_text(line)
+            if text:
+                lines.append((line_y0, text))
+    return [text for _, text in sorted(lines)]
+
+
+def render_boxed_callout(
+    label: str,
+    body: list[str],
+    config: dict[str, Any],
+    callout_type: str,
+) -> str:
+    style = resolve_callout_style(config)
+    if style == "none":
+        return "\n\n".join([label, *body]).strip()
+    if style == "plain":
+        return "\n".join([f"> **{label}**", *(f"> {line}" for line in body)]).strip()
+    title = f" {label}" if label else ""
+    return "\n".join([f"> [!{callout_type}]{title}", *(f"> {line}" for line in body)]).strip()
+
+
+def extract_boxed_callouts(
+    document: Any,
+    config: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[int, list[tuple[float, float]]]]:
+    """Detect clearly labelled rounded editorial boxes, not code rectangles."""
+    if resolve_boxed_callout_policy(config) == "off":
+        return [], {}
+    callouts: list[dict[str, Any]] = []
+    skip_regions: dict[int, list[tuple[float, float]]] = {}
+    for page_number in range(1, int(document.page_count) + 1):
+        page = document[page_number - 1]
+        rects = _bordered_box_rects(page)
+        for index, rect in enumerate(_merge_bordered_box_rects(rects), start=1):
+            text_lines = _box_text_lines(page, rect)
+            if not text_lines:
+                continue
+            label_match = boxed_callout_label(text_lines[0])
+            base = {
+                "id": f"boxed-callout-p{page_number:04d}-{index}",
+                "page": page_number,
+                "region": [rect[1], rect[3]],
+                "label": text_lines[0],
+                "body": text_lines[1:],
+                "detection": "bordered-box-auto",
+            }
+            if label_match is None or not text_lines[1:]:
+                callouts.append({**base, "status": "skipped", "reason": "unlabelled-or-empty-box"})
+                continue
+            callout_type, title = label_match
+            callout = {
+                **base,
+                "status": "converted",
+                "callout_type": callout_type,
+                "title": title,
+                "markdown": render_boxed_callout(
+                    title,
+                    merge_split_plain_urls("\n".join(text_lines[1:])).splitlines(),
+                    config,
+                    callout_type,
+                ),
+                "y": rect[1],
+                "x": rect[0],
+            }
+            callouts.append(callout)
+            skip_regions.setdefault(page_number, []).append((rect[1] - 2.0, rect[3] + 2.0))
+    return callouts, skip_regions
 
 
 def render_entry(entry: dict[str, Any], config: dict[str, Any]) -> str:
@@ -1466,6 +2488,7 @@ def render_page_content(
     skip_regions: list[tuple[float, float]] | None = None,
     table_insertions: list[dict[str, Any]] | None = None,
     image_insertions: list[dict[str, Any]] | None = None,
+    inline_images: list[dict[str, Any]] | None = None,
     source_link: str | None = None,
 ) -> str:
     blocks = extract_page_blocks(
@@ -1478,6 +2501,7 @@ def render_page_content(
         code_min_chars=int((config.get("code_blocks") or {}).get("min_chars", 60)),
         known_heading_titles=known_heading_titles,
         skip_regions=skip_regions,
+        inline_images=inline_images,
     )
     page_height = float(getattr(page.rect, "height", 0.0) or 0.0)
     bullet_ys = [float(entry["y"]) for entry in blocks if entry["is_bullet_only"]]
@@ -1504,7 +2528,7 @@ def render_page_content(
             continue
         plain_line = str(entry["plain"]).strip()
         near_page_edge = page_height and (entry["y"] <= page_height * 0.2 or entry["y"] >= page_height * 0.8)
-        if plain_line.isdigit() and near_page_edge:
+        if is_pdf_page_number(plain_line) and near_page_edge:
             continue
         if chapter_title and plain_line.lower().startswith("chapter ") and chapter_title.lower() in plain_line.lower() and not entry["is_code"]:
             continue
@@ -1519,12 +2543,16 @@ def render_page_content(
         event_index += 1
     joined = "\n\n".join(rendered)
     joined_lines = compact_unordered_list_spacing(joined.splitlines(keepends=True))
-    page_text = normalise_text("".join(joined_lines))
+    page_text = merge_split_plain_urls(
+        merge_split_inline_code_urls(normalise_text("".join(joined_lines)))
+    )
     try:
         selected_callout_style = resolve_callout_style(config)
     except ValueError as exc:
         raise PipelineError(str(exc)) from exc
     page_text, _, _ = convert_callouts_text(page_text, style=selected_callout_style)
+    page_text = merge_split_inline_code_urls(page_text)
+    page_text = merge_split_plain_urls(page_text)
     return page_text
 
 
@@ -1588,6 +2616,7 @@ def render_pages(
     images_by_page: dict[int, list[dict[str, Any]]],
     visual_tables: list[dict[str, Any]] | None = None,
     visual_skip_regions: dict[int, list[tuple[float, float]]] | None = None,
+    boxed_callouts: list[dict[str, Any]] | None = None,
 ) -> str:
     page_link_mode = str((config.get("output") or {}).get("page_links") or "chapter")
     if page_link_mode not in {"chapter", "every-page", "headings-and-code", "none"}:
@@ -1608,6 +2637,19 @@ def render_pages(
                 "priority": 1,
                 "markdown": source_link + "\n\n" + str(table["markdown"]),
             })
+    for callout in (boxed_callouts or []):
+        if start_page <= int(callout.get("page", 0)) <= end_page and callout.get("status") == "converted":
+            page_number = int(callout["page"])
+            source_link = source_reference(
+                page_number, config,
+                output_path=output_path, source_path=source_path, vault=vault,
+            )
+            events_by_page.setdefault(page_number, []).append({
+                "y": float(callout.get("y", 0.0)),
+                "x": float(callout.get("x", 0.0)),
+                "priority": 1,
+                "markdown": (source_link + "\n\n" if source_link else "") + str(callout["markdown"]),
+            })
     lines: list[str] = []
     for page_number in range(start_page, end_page + 1):
         page = document[page_number - 1]
@@ -1620,6 +2662,7 @@ def render_pages(
         if image_placement not in {"pdf-coordinate", "append"}:
             raise PipelineError("output.image_placement must be pdf-coordinate or append")
         image_insertions: list[dict[str, Any]] = []
+        inline_images: list[dict[str, Any]] = []
         for image in sorted(
             images_by_page.get(page_number, []),
             key=lambda item: (
@@ -1628,12 +2671,20 @@ def render_pages(
                 int(item.get("xref", 0)),
             ),
         ):
-            y = page_height + 1.0 if image_placement == "append" else float(image.get("y0", page_height + 1.0))
             image_target = relative_link(
                 output_path,
                 vault_path(vault, str(image["relative_path"])),
                 vault,
             )
+            if image.get("image_role") == "inline-icon":
+                image["inline_markdown"] = render_inline_file_embed(
+                    str(image["relative_path"]),
+                    config,
+                    markdown_target=image_target,
+                )
+                inline_images.append(image)
+                continue
+            y = page_height + 1.0 if image_placement == "append" else float(image.get("y0", page_height + 1.0))
             image_markdown = render_file_embed(
                 str(image["relative_path"]),
                 config,
@@ -1654,6 +2705,7 @@ def render_pages(
             skip_regions=(visual_skip_regions or {}).get(page_number, []),
             table_insertions=events_by_page.get(page_number, []),
             image_insertions=image_insertions,
+            inline_images=inline_images,
             source_link=source_link,
         )
         text = apply_line_filters(text, config)
@@ -1678,6 +2730,7 @@ def render_chapter(
     images_by_page: dict[int, list[dict[str, Any]]],
     visual_tables: list[dict[str, Any]] | None = None,
     visual_skip_regions: dict[int, list[tuple[float, float]]] | None = None,
+    boxed_callouts: list[dict[str, Any]] | None = None,
 ) -> str:
     fields = source_frontmatter(
         config,
@@ -1705,6 +2758,7 @@ def render_chapter(
         images_by_page,
         visual_tables,
         visual_skip_regions,
+        boxed_callouts,
     )
     header = f"# Chapter {chapter.number}: {chapter.title}"
     if str((config.get("output") or {}).get("page_links") or "chapter") == "headings-and-code":
@@ -1728,6 +2782,7 @@ def render_section(
     images_by_page: dict[int, list[dict[str, Any]]],
     visual_tables: list[dict[str, Any]] | None = None,
     visual_skip_regions: dict[int, list[tuple[float, float]]] | None = None,
+    boxed_callouts: list[dict[str, Any]] | None = None,
 ) -> str:
     fields = source_frontmatter(
         config,
@@ -1754,6 +2809,7 @@ def render_section(
         images_by_page,
         visual_tables,
         visual_skip_regions,
+        boxed_callouts,
     )
     header = f"# {section.title}"
     if str((config.get("output") or {}).get("page_links") or "chapter") == "headings-and-code":
@@ -1964,6 +3020,27 @@ def select_chapters(
     return selected, requested
 
 
+def select_sections(
+    sections: list[Section], selection: str | None,
+) -> tuple[list[Section], list[str] | None]:
+    """Return sections in source order, optionally restricted by stable id."""
+    if selection is None:
+        return sections, None
+    requested = [item.strip() for item in selection.split(",") if item.strip()]
+    if not requested:
+        raise PipelineError("--only-sections requires one or more section ids")
+    requested_keys = {item.casefold() for item in requested}
+    selected = [
+        section for section in sections
+        if section.section_id.casefold() in requested_keys
+    ]
+    found_keys = {section.section_id.casefold() for section in selected}
+    missing = [item for item in requested if item.casefold() not in found_keys]
+    if missing:
+        raise PipelineError(f"Requested section(s) not found: {', '.join(missing)}")
+    return selected, requested
+
+
 def previous_manifest(vault: Path, book: str, config: dict[str, Any] | None = None) -> dict[str, Any]:
     path = resource_root(vault, "Reports", book, config) / "latest-manifest.json"
     if not path.exists():
@@ -2051,15 +3128,27 @@ def build_outputs(
     source_hash: str,
     stages: list[str],
     only_chapters: str | None = None,
+    only_sections: str | None = None,
 ) -> tuple[list[OutputFile], dict[str, Any]]:
     pdf = require_pdf_runtime()
     document = pdf.open(str(source))
     try:
+        if only_chapters is not None and only_sections is not None:
+            raise PipelineError("--only-chapters and --only-sections are mutually exclusive")
         display_book = str(config.get("book_title") or book)
         all_chapters = resolve_chapters(document, config)
         chapters, selected_chapter_numbers = select_chapters(all_chapters, only_chapters)
-        scoped = selected_chapter_numbers is not None
-        sections = resolve_sections(document, config) if "sections" in stages and not scoped else []
+        all_sections = resolve_sections(document, config) if "sections" in stages else []
+        if only_sections is not None and "sections" not in stages:
+            raise PipelineError("--only-sections requires the sections stage")
+        if only_sections is not None:
+            sections, selected_section_ids = select_sections(all_sections, only_sections)
+            chapters = []
+        elif selected_chapter_numbers is not None:
+            sections, selected_section_ids = [], None
+        else:
+            sections, selected_section_ids = all_sections, None
+        scoped = selected_chapter_numbers is not None or selected_section_ids is not None
         attachment_root = resource_root(vault, "Attachment", book, config)
         try:
             attachment_root.relative_to(vault.resolve())
@@ -2070,7 +3159,7 @@ def build_outputs(
             ) from exc
         images_by_page: dict[int, list[dict[str, Any]]] = {}
         image_records: list[dict[str, Any]] = []
-        if "attachments" in stages:
+        if "attachments" in stages and selected_section_ids is None:
             attachment_config = config.get("attachments") or {}
             included_section_kinds = {
                 str(item).strip().lower()
@@ -2084,13 +3173,23 @@ def build_outputs(
                 ],
             ]
             images_by_page, image_records = extract_images(
-                document, attachment_ranges, attachment_root, book, link_root=vault
+                document,
+                attachment_ranges,
+                attachment_root,
+                book,
+                link_root=vault,
+                config=config,
             )
 
         visual_tables: list[dict[str, Any]] = []
         visual_skip_regions: dict[int, list[tuple[float, float]]] = {}
         if "visual_tables" in stages:
             visual_tables, visual_skip_regions = extract_visual_tables(document, config)
+        boxed_callouts: list[dict[str, Any]] = []
+        if "callouts" in stages or "sections" in stages or "chapters" in stages:
+            boxed_callouts, boxed_skip_regions = extract_boxed_callouts(document, config)
+            for page_number, regions in boxed_skip_regions.items():
+                visual_skip_regions.setdefault(page_number, []).extend(regions)
 
         output_config = config.get("output") or {}
         chapter_pattern = str(output_config.get("chapter_filename") or "Chapter {number} - {title}.md")
@@ -2115,6 +3214,7 @@ def build_outputs(
                 images_by_page,
                 visual_tables,
                 visual_skip_regions,
+                boxed_callouts,
             )
             if "tables" in stages:
                 table_config = config.get("table_transform") or {}
@@ -2143,6 +3243,7 @@ def build_outputs(
                     images_by_page,
                     visual_tables,
                     visual_skip_regions,
+                    boxed_callouts,
                 )
                 output = OutputFile(as_posix(relative), content.encode("utf-8"), "section")
                 outputs.append(output)
@@ -2157,8 +3258,25 @@ def build_outputs(
                 "rows": len(table.get("rows", [])),
                 "status": table.get("status"),
                 "reason": table.get("reason"),
+                "confidence": table.get("confidence"),
+                "detection": table.get("detection"),
+                "page_regions": table.get("page_regions", {}),
             }
             for table in visual_tables
+        ]
+        boxed_callout_audits = [
+            {
+                "id": callout.get("id"),
+                "page": callout.get("page"),
+                "label": callout.get("label"),
+                "title": callout.get("title"),
+                "body_lines": len(callout.get("body", [])),
+                "status": callout.get("status"),
+                "reason": callout.get("reason"),
+                "detection": callout.get("detection"),
+                "region": callout.get("region"),
+            }
+            for callout in boxed_callouts
         ]
 
         lens_outputs: list[OutputFile] = []
@@ -2166,7 +3284,7 @@ def build_outputs(
             lens_outputs = extract_lens_outputs(chapter_outputs, config, vault, display_book, source_hash)
             outputs.extend(lens_outputs)
 
-        if "attachments" in stages:
+        if "attachments" in stages and selected_section_ids is None:
             for record in image_records:
                 target = vault_path(vault, record["relative_path"])
                 if scoped and target.exists():
@@ -2200,11 +3318,30 @@ def build_outputs(
                 topic_index_output, config,
             ))
 
+        inline_records = [
+            record for record in image_records
+            if record.get("image_role") == "inline-icon"
+        ]
+        ambiguous_image_records = [
+            record for record in image_records
+            if record.get("image_classification") == "ambiguous"
+        ]
+
         details = {
             "scope": {
                 "only_chapters": selected_chapter_numbers,
                 "selected_chapters": [chapter.number for chapter in chapters],
+                "only_sections": selected_section_ids,
+                "selected_sections": [
+                    {
+                        "id": section.section_id,
+                        "title": section.title,
+                        "relative_path": as_posix(Path(section.folder) / (section.filename or "")),
+                    }
+                    for section in sections
+                ],
                 "skipped_nonchapter_outputs": scoped,
+                "skipped_nonsection_outputs": selected_section_ids is not None,
             },
             "chapters": [
                 {
@@ -2230,8 +3367,41 @@ def build_outputs(
                 for section, relative, _ in section_outputs
             ],
             "images": image_records,
+            "image_classification": {
+                "policy": resolve_inline_image_policy(config),
+                "syntax": resolve_inline_image_syntax(config),
+                "total": len(image_records),
+                "inline": len(inline_records),
+                "block": len(image_records) - len(inline_records),
+                "ambiguous": len(ambiguous_image_records),
+                "ambiguous_records": ambiguous_image_records,
+            },
             "table_audits": table_audits,
             "visual_table_audits": visual_table_audits,
+            "visual_table_discovery": resolve_visual_table_discovery(config),
+            "boxed_callout_policy": resolve_boxed_callout_policy(config),
+            "boxed_callout_audits": boxed_callout_audits,
+            "structure_preview": {
+                "visual_tables": [
+                    {
+                        "id": item.get("id"),
+                        "start_page": item.get("start_page"),
+                        "end_page": item.get("end_page"),
+                        "markdown": item.get("markdown"),
+                    }
+                    for item in visual_tables
+                    if item.get("status") == "converted"
+                ],
+                "boxed_callouts": [
+                    {
+                        "id": item.get("id"),
+                        "page": item.get("page"),
+                        "markdown": item.get("markdown"),
+                    }
+                    for item in boxed_callouts
+                    if item.get("status") == "converted"
+                ],
+            },
             "tables_count": sum(int(item.get("tables_count", 0)) for item in table_audits) + sum(1 for item in visual_table_audits if item.get("status") == "converted"),
             "rows_transformed": sum(int(item.get("rows_transformed", 0)) for item in table_audits) + sum(int(item.get("rows", 0)) for item in visual_table_audits if item.get("status") == "converted"),
             "definition_tables_count": sum(int(item.get("tables_count", 0)) for item in table_audits),
@@ -2252,6 +3422,16 @@ def build_outputs(
                 }
                 for item in visual_table_audits
                 if item.get("status") != "converted"
+            ] + [
+                {
+                    "kind": "boxed-callout",
+                    "id": item.get("id"),
+                    "page": item.get("page"),
+                    "reason": item.get("reason"),
+                    "detection": item.get("detection"),
+                }
+                for item in boxed_callout_audits
+                if item.get("status") != "converted"
             ],
         }
         return outputs, details
@@ -2271,10 +3451,25 @@ def make_backup(
         backup_root = resource_root(vault, "Backups", book, config)
         backup_root.mkdir(parents=True, exist_ok=True)
         backup_path = backup_root / f"pre-{timestamp}.zip"
+        backup_root_resolved = backup_root.resolve()
         entries: list[dict[str, Any]] = []
         with zipfile.ZipFile(backup_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             for target in sorted(vault.rglob("*")):
-                if not target.is_file() or target.resolve() == backup_path.resolve():
+                resolved_target = target.resolve()
+                try:
+                    relative_parts = resolved_target.relative_to(vault.resolve()).parts
+                except ValueError:
+                    relative_parts = ()
+                under_backup_tree = any(
+                    part.casefold() == "backups"
+                    for part in relative_parts[:-1]
+                )
+                if (
+                    not target.is_file()
+                    or resolved_target == backup_path.resolve()
+                    or resolved_target.is_relative_to(backup_root_resolved)
+                    or under_backup_tree
+                ):
                     continue
                 relative = vault_relative(vault, target)
                 archive_name = f"files/{relative}"
@@ -2368,8 +3563,13 @@ def atomic_write(path: Path, data: bytes) -> None:
 
 def merge_manifest_files(
     previous: dict[str, Any], current: list[dict[str, Any]], scoped: bool,
+    *, include_new: bool = True,
 ) -> list[dict[str, Any]]:
-    """Preserve file records for untouched outputs during a scoped apply."""
+    """Preserve file records for untouched outputs during a scoped apply.
+
+    Section-only maintenance can keep its records in the dedicated apply
+    report without adding them to a legacy chapter manifest.
+    """
     if not scoped:
         return current
     current_by_path = {str(item.get("relative_path")): item for item in current}
@@ -2379,7 +3579,8 @@ def merge_manifest_files(
             continue
         path = str(item["relative_path"])
         merged.append(current_by_path.pop(path, item))
-    merged.extend(current_by_path.values())
+    if include_new:
+        merged.extend(current_by_path.values())
     return merged
 
 
@@ -2546,6 +3747,7 @@ def build_dry_run(args: argparse.Namespace) -> dict[str, Any]:
         context["vault"], context["book"], context["config"], context["source"],
         source_for_output, context["source_info"]["sha256"], stages,
         getattr(args, "only_chapters", None),
+        getattr(args, "only_sections", None),
     )
     classifications = classify_outputs(
         context["vault"], outputs,
@@ -2612,6 +3814,7 @@ def command_apply(args: argparse.Namespace) -> int:
         context["vault"], context["book"], context["config"], context["source"],
         source_for_output, context["source_info"]["sha256"], stages,
         getattr(args, "only_chapters", None),
+        getattr(args, "only_sections", None),
     )
     adjusted = [adjust_text_line_endings(context["vault"], output) for output in outputs]
     manifest_before = previous_manifest(
@@ -2636,19 +3839,22 @@ def command_apply(args: argparse.Namespace) -> int:
         }
         if source_classification["conflict"]:
             conflicts.append(source_classification)
+    scope_selection = getattr(args, "only_chapters", None) or getattr(args, "only_sections", None)
+    selected_output_kinds = {"chapter"} if getattr(args, "only_chapters", None) else {"section"}
     if conflicts and getattr(args, "allow_generated_drift", False):
-        if not getattr(args, "only_chapters", None):
+        if not scope_selection:
             raise ConflictError(
-                "--allow-generated-drift is only valid with --only-chapters and cannot authorize a full regeneration."
+                "--allow-generated-drift is only valid with --only-chapters or --only-sections "
+                "and cannot authorize a full regeneration."
             )
         remaining: list[dict[str, Any]] = []
         selected_paths = {
-            output.relative_path for output in adjusted if output.kind == "chapter"
+            output.relative_path for output in adjusted if output.kind in selected_output_kinds
         }
         for item in conflicts:
             target = vault_path(context["vault"], str(item.get("relative_path", "")))
             if (
-                item.get("kind") == "chapter"
+                item.get("kind") in selected_output_kinds
                 and item.get("relative_path") in selected_paths
                 and target.exists()
                 and has_generator_marker(target.read_bytes())
@@ -2667,7 +3873,7 @@ def command_apply(args: argparse.Namespace) -> int:
         backup_classifications.append(source_classification)
     backup_path, backup_manifest = make_backup(
         context["vault"], context["book"], backup_classifications, timestamp, context["config"],
-        full=bool(getattr(args, "only_chapters", None)),
+        full=bool(scope_selection),
     )
     if not context["managed"] and args.copy_source:
         target = context["managed_target"]
@@ -2714,7 +3920,8 @@ def command_apply(args: argparse.Namespace) -> int:
         "files": merge_manifest_files(
             manifest_before,
             file_records,
-            bool(getattr(args, "only_chapters", None)),
+            bool(scope_selection),
+            include_new=getattr(args, "only_sections", None) is None,
         ),
         "scope": details.get("scope"),
     }
@@ -2967,6 +4174,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(dry_parser)
     dry_parser.add_argument("--stages", help="Comma-separated conversion stages")
     dry_parser.add_argument("--only-chapters", help="Comma-separated chapter numbers to preview")
+    dry_parser.add_argument("--only-sections", help="Comma-separated section ids to preview")
     dry_parser.add_argument("--copy-source", action="store_true", help="Plan copying an external source into the configured source directory")
     dry_parser.add_argument("--report-out")
     dry_parser.set_defaults(handler=command_dry_run)
@@ -2975,12 +4183,13 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(apply_parser)
     apply_parser.add_argument("--stages", help="Comma-separated conversion stages")
     apply_parser.add_argument("--only-chapters", help="Comma-separated chapter numbers to regenerate")
+    apply_parser.add_argument("--only-sections", help="Comma-separated section ids to regenerate")
     apply_parser.add_argument("--copy-source", action="store_true", help="Copy an external PDF into the configured source directory before writing")
     apply_parser.add_argument("--confirm-apply", action="store_true", help="Required explicit write confirmation")
     apply_parser.add_argument(
         "--allow-generated-drift",
         action="store_true",
-        help="Authorize replacing selected generated chapter files whose prior hash drifted",
+        help="Authorize replacing selected generated chapter or section files whose prior hash drifted",
     )
     apply_parser.set_defaults(handler=command_apply)
 

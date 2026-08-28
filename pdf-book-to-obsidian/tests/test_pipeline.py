@@ -17,8 +17,14 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 from markdown_tables import transform_definition_lists  # noqa: E402
 import markdown_layout_repair as layout_repair  # noqa: E402
+import toc_table_repair as toc_repair  # noqa: E402
 from markdown_layout_repair import repair_text  # noqa: E402
-from markdown_obsidian import convert_callouts_text, render_file_embed, render_note_link  # noqa: E402
+from markdown_obsidian import (  # noqa: E402
+    convert_callouts_text,
+    inline_image_syntax,
+    render_file_embed,
+    render_note_link,
+)
 import pdf_book_pipeline as pipeline  # noqa: E402
 
 
@@ -70,6 +76,144 @@ class PipelineTests(unittest.TestCase):
         self.assertFalse(uncertain)
         self.assertGreaterEqual(sum(change.kind == "broken-emphasis" for change in changes), 2)
 
+    def test_layout_repair_formats_keyboard_shortcuts_and_subheadings(self) -> None:
+        source = (
+            "### Useful editing hotkeys\n\n"
+            "***Copy and paste***\n\n"
+            "Use the following keys:\n\n"
+            "The **C++** label remains normal emphasis.\n\n"
+            "- * **Ctrl* + *C*: Copies the selected text\n"
+            "- * **Ctrl* + *Shift* + *F*: Searches for a keyword\n\n"
+            "***Go to operations***\n\n"
+            "- * **F12*, *Ctrl* + *F12*: Goes to the definition\n"
+        )
+        transformed, changes, uncertain = repair_text(
+            source,
+            "Chapter.md",
+            shortcut_style="inline-code",
+        )
+        self.assertIn("#### Copy and paste", transformed)
+        self.assertIn("#### Go to operations", transformed)
+        self.assertIn("- `Ctrl + C`: Copies the selected text", transformed)
+        self.assertIn("- `Ctrl + Shift + F`: Searches for a keyword", transformed)
+        self.assertIn("- `F12`, `Ctrl + F12`: Goes to the definition", transformed)
+        self.assertIn("The **C++** label remains normal emphasis.", transformed)
+        self.assertNotIn("- * **", transformed)
+        self.assertFalse(any(item["kind"].startswith("shortcut") for item in uncertain))
+        self.assertEqual(
+            sum(change.kind == "shortcut-inline-code" for change in changes),
+            3,
+        )
+        self.assertEqual(
+            sum(change.kind == "shortcut-subheading" for change in changes),
+            2,
+        )
+        repeated, repeated_changes, repeated_uncertain = repair_text(
+            transformed,
+            "Chapter.md",
+            shortcut_style="inline-code",
+        )
+        self.assertEqual(repeated, transformed)
+        self.assertFalse(repeated_changes)
+        self.assertEqual(repeated_uncertain, uncertain)
+
+    def test_layout_repair_preserves_shortcuts_when_style_is_not_selected(self) -> None:
+        source = (
+            "### Useful editing hotkeys\n\n"
+            "***Copy and paste***\n\n"
+            "- * **Ctrl* + *C*: Copies the selected text\n"
+        )
+        transformed, changes, uncertain = repair_text(source, "Chapter.md")
+        self.assertEqual(transformed, source)
+        self.assertFalse(changes)
+        self.assertFalse(uncertain)
+
+    def test_layout_repair_normalizes_source_refs_and_deduplicates_header_metadata(self) -> None:
+        source = (
+            "> [Source PDF, p. 14](book.pdf#page=14)\n\n"
+            "# Preface\n\n"
+            "> [Source PDF, p. 14](book.pdf#page=14)\n\n"
+            "A paragraph.\n\n"
+            "> [Source PDF, p. 15](book.pdf#page=15)\n"
+        )
+        transformed, changes, uncertain = repair_text(
+            source,
+            "06_Preface.md",
+            source_reference_style="plain-blockquote",
+        )
+        self.assertEqual(transformed.count("> Source PDF, p. 14"), 1)
+        self.assertEqual(transformed.count("> Source PDF, p. 15"), 1)
+        self.assertNotIn("[Source PDF, p. 14](", transformed)
+        self.assertTrue(any(change.kind == "source-reference-style" for change in changes))
+        self.assertTrue(any(change.kind == "duplicate-source-reference" for change in changes))
+        self.assertFalse(uncertain)
+
+    def test_layout_repair_cleans_toc_fragments_without_rebuilding_entries(self) -> None:
+        source = (
+            "# Table of Contents\n\n"
+            "> [Source PDF, p. 8](book.pdf#page=8)\n\n"
+            "### **Part 1 – Getting Started with Unreal C++ ** **Scripting**\n\n"
+            "### **1**\n\n"
+            "## **Creating Your First Unreal C++ Game\x08** **3**\n\n"
+            "**Technical requirements\x08** **3** **Understanding C++ scripting in Unreal\x08**** ****4**\n"
+        )
+        transformed, changes, uncertain = repair_text(
+            source,
+            "00_Paratext/05_Table of Contents.md",
+            source_reference_style="plain-blockquote",
+        )
+        self.assertIn("### Part 1 – Getting Started with Unreal C++ Scripting", transformed)
+        self.assertIn("### 1", transformed)
+        self.assertIn("## Creating Your First Unreal C++ Game — p. 3", transformed)
+        self.assertIn("Technical requirements 3 Understanding C++ scripting in Unreal 4", transformed)
+        self.assertNotIn("**", transformed)
+        self.assertNotIn("\x08", transformed)
+        self.assertTrue(any(change.kind == "toc-format" for change in changes))
+        self.assertFalse(uncertain)
+        repeated, repeated_changes, repeated_uncertain = repair_text(
+            transformed,
+            "00_Paratext/05_Table of Contents.md",
+            source_reference_style="plain-blockquote",
+        )
+        self.assertEqual(repeated, transformed)
+        self.assertFalse(repeated_changes)
+        self.assertEqual(repeated_uncertain, uncertain)
+
+    def test_layout_repair_removes_only_redundant_leading_heading(self) -> None:
+        source = (
+            "> [Source PDF, p. 22](book.pdf#page=22)\n\n"
+            "# Part 1 - Getting Started with Unreal C++ Scripting\n\n"
+            "> [Source PDF, p. 22](book.pdf#page=22)\n\n"
+            "# Part 1 – Getting Started with Unreal C++ Scripting\n\n"
+            "Introductory text.\n"
+        )
+        transformed, changes, uncertain = repair_text(
+            source,
+            "01_Part 1 - Getting Started with Unreal C++ Scripting/00_Part Overview.md",
+            source_reference_style="plain-blockquote",
+        )
+        self.assertEqual(
+            transformed.count("# Part 1 - Getting Started with Unreal C++ Scripting"),
+            1,
+        )
+        self.assertTrue(any(change.kind == "duplicate-heading" for change in changes))
+        self.assertFalse(uncertain)
+
+    def test_layout_repair_closes_clear_italic_list_fragment(self) -> None:
+        source = "- * Chapter 1*, *Creating Your First Unreal C++ Game*\n*Figure 1.1* remains italic.\n"
+        transformed, changes, uncertain = repair_text(source, "00_Part Overview.md")
+        self.assertIn("- *Chapter 1*, *Creating Your First Unreal C++ Game*", transformed)
+        self.assertIn("*Figure 1.1* remains italic.", transformed)
+        self.assertTrue(any(change.kind == "broken-emphasis" for change in changes))
+        self.assertFalse(uncertain)
+        repeated, repeated_changes, repeated_uncertain = repair_text(
+            transformed,
+            "00_Part Overview.md",
+        )
+        self.assertEqual(repeated, transformed)
+        self.assertFalse(repeated_changes)
+        self.assertEqual(repeated_uncertain, uncertain)
+
     def test_layout_repair_moves_figure_source_to_caption(self) -> None:
         source = (
             "A paragraph.\n\n"
@@ -79,9 +223,9 @@ class PipelineTests(unittest.TestCase):
         )
         transformed, changes, uncertain = repair_text(source, "Chapter.md")
         self.assertNotIn("> [Source PDF, p. 37]", transformed)
-        self.assertIn("![[Figure-p0037-777.jpeg]]\n\nFigure 1.14 – Adding a new C++ class from the Character class ([Source PDF, p. 37](book.pdf#page=37))", transformed)
+        self.assertIn("![[Figure-p0037-777.jpeg]]\n\n> Figure 1.14 – Adding a new C++ class from the Character class ([Source PDF, p. 37](book.pdf#page=37))", transformed)
         self.assertTrue(any(change.kind == "figure-source-to-caption" for change in changes))
-        self.assertTrue(any(change.kind == "figure-caption" for change in changes))
+        self.assertFalse(any(change.kind == "figure-caption" for change in changes))
         self.assertFalse(uncertain)
 
     def test_layout_repair_inserts_figure_caption_separator(self) -> None:
@@ -91,7 +235,7 @@ class PipelineTests(unittest.TestCase):
         )
         transformed, changes, uncertain = repair_text(source, "Chapter.md")
         self.assertIn(
-            "![[Figure-p0037-777.jpeg]]\n\nFigure 1.14 – Adding a new C++ class from the Character class",
+            "![[Figure-p0037-777.jpeg]]\n\n> Figure 1.14 – Adding a new C++ class from the Character class",
             transformed,
         )
         self.assertTrue(any(change.kind == "figure-spacing" for change in changes))
@@ -114,10 +258,41 @@ class PipelineTests(unittest.TestCase):
             with zipfile.ZipFile(backup) as archive:
                 self.assertEqual(archive.read("Chapter 01.md"), original_bytes)
 
+    def test_layout_repair_include_limits_preview_to_selected_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            book = Path(temporary) / "Book"
+            book.mkdir()
+            selected = book / "Chapter 01.md"
+            other = book / "Chapter 02.md"
+            selected.write_text("**Note** Selected text.\n", encoding="utf-8")
+            other.write_text("**Note** Other text.\n", encoding="utf-8")
+
+            report = layout_repair.preview(book, include=["Chapter 01.md"])
+
+            self.assertEqual(report["scope"], "selected files")
+            self.assertEqual(report["files_scanned"], 1)
+            self.assertEqual(report["files"][0]["relative_path"], "Chapter 01.md")
+            with self.assertRaises(ValueError):
+                layout_repair.preview(book, include=["../outside.md"])
+
     def test_layout_repair_collapses_only_outside_code_fence(self) -> None:
         source = "Before\n\n\n```cpp\n\n\nint main() {}\n```\n\n\nAfter\n"
         transformed, _, _ = repair_text(source, "Chapter.md")
         self.assertIn("Before\n\n```cpp\n\n\nint main() {}\n```\n\nAfter", transformed)
+
+    def test_layout_repair_removes_isolated_roman_footer_before_source_marker(self) -> None:
+        source = (
+            "---\n"
+            "title: Preface\n"
+            "---\n"
+            "Body text.\n\n"
+            "xviii\n\n"
+            "> Source PDF, p. 19\n"
+        )
+        transformed, changes, uncertain = repair_text(source, "00_Paratext/06_Preface.md")
+        self.assertNotIn("xviii", transformed)
+        self.assertTrue(any(change.kind == "page-chrome" for change in changes))
+        self.assertFalse(uncertain)
 
     def test_unordered_lists_compact_wrapped_items_and_preserve_markers(self) -> None:
         source = (
@@ -194,6 +369,14 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(repeated, transformed)
         self.assertFalse(repeated_changes)
         self.assertFalse(repeated_uncertain)
+
+    def test_tips_or_important_notes_becomes_titled_note_callout(self) -> None:
+        source = "**Tips or important notes**\n\nAppear like this.\n"
+        transformed, changes, uncertain = convert_callouts_text(source)
+        self.assertIn("> [!NOTE] Tips or important notes", transformed)
+        self.assertIn("> Appear like this.", transformed)
+        self.assertEqual(len(changes), 1)
+        self.assertFalse(uncertain)
 
     def test_obsidian_callout_absorbs_continuous_prose_but_stops_at_blocks(self) -> None:
         source = (
@@ -357,6 +540,119 @@ class PipelineTests(unittest.TestCase):
         self.assertLess(markdown.index("> Figure 2.7"), markdown.index("Bottom paragraph"))
         self.assertEqual(markdown.count("> Source PDF, p. 1"), 1)
 
+    def test_small_image_overlapping_one_text_line_is_classified_inline(self) -> None:
+        class Page:
+            def get_text(self, mode: str, sort: bool = True) -> dict[str, object]:
+                return {"blocks": [{
+                    "type": 0,
+                    "lines": [{
+                        "bbox": (60.0, 100.0, 500.0, 114.0),
+                        "spans": [{"text": "Click the Play button.", "bbox": (60.0, 100.0, 500.0, 114.0)}],
+                    }],
+                }]}
+
+        inline = pipeline.classify_inline_image(
+            Page(),
+            {"x0": 180.0, "y0": 101.0, "x1": 190.0, "y1": 113.0},
+        )
+        self.assertEqual(inline["image_role"], "inline-icon")
+        self.assertEqual(inline["image_classification"], "clear-inline")
+        self.assertEqual(inline["inline_line_y0"], 100.0)
+
+        large = pipeline.classify_inline_image(
+            Page(),
+            {"x0": 180.0, "y0": 100.0, "x1": 260.0, "y1": 180.0},
+        )
+        self.assertEqual(large["image_role"], "figure-image")
+        self.assertEqual(large["image_classification"], "clear-block")
+
+    def test_inline_image_is_embedded_inside_text_without_source_reference(self) -> None:
+        class Rect:
+            height = 800.0
+
+        class Page:
+            rect = Rect()
+
+            def get_text(self, mode: str, sort: bool = True) -> dict[str, object]:
+                return {"blocks": [{
+                    "type": 0,
+                    "bbox": (60.0, 100.0, 260.0, 114.0),
+                    "lines": [{
+                        "bbox": (60.0, 100.0, 260.0, 114.0),
+                        "spans": [
+                            {"text": "Click the Play (", "bbox": (60.0, 100.0, 180.0, 114.0), "size": 10, "font": "Helvetica"},
+                            {"text": ") button.", "bbox": (192.0, 100.0, 260.0, 114.0), "size": 10, "font": "Helvetica"},
+                        ],
+                    }],
+                }]}
+
+        markdown = pipeline.render_page_content(
+            Page(),
+            "Chapter 1",
+            {"output": {"page_links": "none", "markdown_baseline": "obsidian"}},
+            inline_images=[{
+                "x0": 180.0,
+                "x1": 190.0,
+                "inline_line_y0": 100.0,
+                "inline_line_y1": 114.0,
+                "inline_markdown": "![[Assets/play.png]]",
+            }],
+        )
+        self.assertIn("Click the Play ( ![[Assets/play.png]] ) button.", markdown)
+        self.assertNotIn("\n\n![[Assets/play.png]]", markdown)
+        self.assertNotIn("Source PDF", markdown)
+
+    def test_inline_images_join_text_blocks_and_wrapped_lines(self) -> None:
+        class Rect:
+            height = 800.0
+
+        def line(text: str, bbox: tuple[float, float, float, float]) -> dict[str, object]:
+            return {"bbox": bbox, "spans": [{"text": text, "bbox": bbox, "size": 10, "font": "Helvetica"}]}
+
+        class Page:
+            rect = Rect()
+
+            def get_text(self, mode: str, sort: bool = True) -> dict[str, object]:
+                return {"blocks": [
+                    {"type": 0, "lines": [line("Build the solution and play the program by clicking either the Start (", (63.0, 100.0, 342.6, 114.0))]},
+                    {"type": 0, "lines": [
+                        line(") or Start without Debug ", (353.3, 100.0, 461.3, 114.0)),
+                        line("( ", (63.0, 113.1, 68.7, 126.5)),
+                    ]},
+                    {"type": 0, "lines": [line(") button.", (80.4, 113.1, 117.2, 126.5))]},
+                ]}
+
+        markdown = pipeline.render_page_content(
+            Page(),
+            "Chapter 2",
+            {"output": {"page_links": "none", "markdown_baseline": "obsidian"}},
+            inline_images=[
+                {
+                    "x0": 342.7, "y0": 101.1, "x1": 353.3, "y1": 113.0,
+                    "inline_line_y0": 100.0, "inline_line_y1": 114.0,
+                    "inline_markdown": "![[Assets/start.png]]",
+                },
+                {
+                    "x0": 68.7, "y0": 113.2, "x1": 80.4, "y1": 126.4,
+                    "inline_line_y0": 113.1, "inline_line_y1": 126.5,
+                    "inline_markdown": "![[Assets/start-without-debug.png]]",
+                },
+            ],
+        )
+        self.assertIn(
+            "Build the solution and play the program by clicking either the Start ( ![[Assets/start.png]] ) or Start without Debug ( ![[Assets/start-without-debug.png]] ) button.",
+            markdown,
+        )
+        self.assertNotIn("\n\n![[Assets/start.png]]", markdown)
+        self.assertNotIn("\n\n![[Assets/start-without-debug.png]]", markdown)
+
+    def test_inline_image_syntax_defaults_to_obsidian_and_supports_markdown_override(self) -> None:
+        self.assertEqual(inline_image_syntax({"output": {"markdown_baseline": "obsidian"}}), "obsidian-wiki")
+        self.assertEqual(
+            inline_image_syntax({"output": {"markdown_baseline": "obsidian", "inline_image_syntax": "markdown"}}),
+            "markdown",
+        )
+
     def test_only_chapters_selection_preserves_source_order(self) -> None:
         chapters = [
             pipeline.Chapter("1", "One", "Part", 1, 2),
@@ -366,6 +662,54 @@ class PipelineTests(unittest.TestCase):
         selected, requested = pipeline.select_chapters(chapters, "3,1")
         self.assertEqual([chapter.number for chapter in selected], ["1", "3"])
         self.assertEqual(requested, ["3", "1"])
+
+    def test_only_sections_selection_uses_stable_ids_and_preserves_source_order(self) -> None:
+        sections = [
+            pipeline.Section("title-page", "Title Page", "paratext", "00_Paratext", "01_Title Page.md", 2, 2),
+            pipeline.Section("foreword", "Foreword", "paratext", "00_Paratext", "03_Foreword.md", 4, 5),
+            pipeline.Section("contributors", "Contributors", "paratext", "00_Paratext", "04_Contributors.md", 6, 7),
+        ]
+        selected, requested = pipeline.select_sections(sections, "contributors,foreword")
+        self.assertEqual([section.section_id for section in selected], ["foreword", "contributors"])
+        self.assertEqual(requested, ["contributors", "foreword"])
+
+    def test_only_sections_and_only_chapters_are_mutually_exclusive(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pdf_path = root / "book.pdf"
+            self.make_pdf(pdf_path, ["Plain text"])
+            with self.assertRaises(pipeline.PipelineError):
+                pipeline.build_outputs(
+                    root,
+                    "Book",
+                    {"output": {"page_links": "none"}, "sections": []},
+                    pdf_path,
+                    pdf_path,
+                    "hash",
+                    ["chapterize", "sections"],
+                    "1",
+                    "foreword",
+                )
+
+    def test_section_only_manifest_merge_does_not_expand_legacy_manifest(self) -> None:
+        previous = {"files": [{"relative_path": "Chapter.md", "after_sha256": "old"}]}
+        current = [{"relative_path": "00_Paratext/03_Foreword.md", "after_sha256": "new"}]
+        merged = pipeline.merge_manifest_files(previous, current, True, include_new=False)
+        self.assertEqual(merged, previous["files"])
+
+    def test_full_backup_excludes_existing_backup_trees(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            vault = Path(temporary)
+            backup_dir = vault / "File" / "Backups" / "Book"
+            backup_dir.mkdir(parents=True)
+            (backup_dir / "historical.zip").write_bytes(b"historical backup")
+            (vault / "note.md").write_text("content\n", encoding="utf-8")
+            backup, _ = pipeline.make_backup(vault, "Book", [], "20260828-000000", {}, full=True)
+            self.assertIsNotNone(backup)
+            with zipfile.ZipFile(backup) as archive:
+                names = archive.namelist()
+            self.assertIn("files/note.md", names)
+            self.assertNotIn("files/File/Backups/Book/historical.zip", names)
 
     def test_layout_repair_baseline_manifest_detects_manual_drift(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -679,6 +1023,64 @@ class PipelineTests(unittest.TestCase):
             self.assertIn("Text with \\| pipe", tables[0]["markdown"])
             self.assertEqual(sorted(skip_regions), [1, 2])
 
+    def test_visual_table_auto_discovery_preserves_empty_cells(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            pdf_path = Path(temporary) / "auto-visual-table.pdf"
+            pdf = canvas.Canvas(str(pdf_path), pagesize=(400, 400))
+            x = [50, 200, 350]
+            y = [300, 260, 220, 180]
+            for xpos in x:
+                pdf.line(xpos, 180, xpos, 300)
+            for ypos in y:
+                pdf.line(50, ypos, 350, ypos)
+            rows = [
+                ("Name", "Value"),
+                ("Engine", "Unreal"),
+                ("Compiler", ""),
+            ]
+            for row_index, row in enumerate(rows):
+                for col_index, value in enumerate(row):
+                    if value:
+                        pdf.setFont("Helvetica", 9)
+                        pdf.drawString(x[col_index] + 5, [282, 242, 202][row_index], value)
+            pdf.showPage()
+            pdf.save()
+            document = pipeline.require_pdf_runtime().open(str(pdf_path))
+            try:
+                tables = pipeline.discover_visual_tables(
+                    document,
+                    {"visual_tables": {"enabled": True, "discovery": "auto", "regions": []}},
+                )
+            finally:
+                document.close()
+            converted = [item for item in tables if item["status"] == "converted"]
+            self.assertEqual(len(converted), 1)
+            self.assertEqual(converted[0]["headers"], ["Name", "Value"])
+            self.assertEqual(converted[0]["rows"][-1], ["Compiler", ""])
+
+    def test_split_inline_code_urls_join_only_url_fragments(self) -> None:
+        self.assertEqual(
+            pipeline.merge_split_inline_code_urls("`https://` `example.com/path`"),
+            "`https://example.com/path`",
+        )
+        self.assertEqual(
+            pipeline.merge_split_inline_code_urls("`left/` `right`"),
+            "`left/` `right`",
+        )
+        self.assertEqual(
+            pipeline.merge_split_plain_urls("See https://\nexample.com/path."),
+            "See https://example.com/path.",
+        )
+        self.assertEqual(
+            pipeline.merge_split_plain_urls("See https://example.com\nnext."),
+            "See https://example.com\nnext.",
+        )
+
+    def test_roman_page_numbers_are_page_chrome_candidates(self) -> None:
+        self.assertTrue(pipeline.is_pdf_page_number("xvii"))
+        self.assertTrue(pipeline.is_pdf_page_number("17"))
+        self.assertFalse(pipeline.is_pdf_page_number("Chapter"))
+
     def test_cross_page_code_fences_are_merged_conservatively(self) -> None:
         source = (
             "> [Source PDF, p. 1](book.pdf#page=1)\n\n"
@@ -694,6 +1096,117 @@ class PipelineTests(unittest.TestCase):
     def test_markdown_link_audit_allows_parentheses_in_pdf_filename(self) -> None:
         targets = list(pipeline.markdown_link_targets("[PDF](../Book (Author).pdf#page=2)"))
         self.assertEqual(targets, ["../Book (Author).pdf#page=2"])
+
+    def test_toc_title_normalization_keeps_identifiers_and_removes_delimiters(self) -> None:
+        self.assertEqual(
+            toc_repair.normalize_title("TP_ PickUpComponent.cpp"),
+            toc_repair.normalize_title("TP_PickUpComponent.cpp"),
+        )
+        self.assertEqual(
+            toc_repair.normalize_title("_Copy and paste_"),
+            "copy and paste",
+        )
+
+    def test_toc_renderer_builds_chapter_tables_and_reports_unmatched_heading(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            toc = root / "00_Paratext" / "05_Table of Contents.md"
+            chapter_dir = root / "01_Part 1"
+            back_dir = root / "04_Back Matter"
+            toc.parent.mkdir(parents=True)
+            chapter_dir.mkdir()
+            back_dir.mkdir()
+            toc.write_text("---\ntype: paratext\n---\n", encoding="utf-8")
+            chapter = chapter_dir / "Chapter 01 - A Book.md"
+            chapter.write_text("# A Book\n## First section\n", encoding="utf-8")
+            (back_dir / "01_Index.md").write_text("# Index\n", encoding="utf-8")
+            (back_dir / "02_Recommended.md").write_text(
+                "# Other Books You May Enjoy\n", encoding="utf-8"
+            )
+            entries = {
+                "toc_pdf_pages": [8, 13],
+                "parts": [{"number": 1, "title": "Part 1 - Getting Started"}],
+                "chapters": [{
+                    "number": 1,
+                    "title": "A Book",
+                    "print_page": 1,
+                    "part_number": 1,
+                    "sections": [
+                        {"title": "First section", "print_page": 2, "sequence": 1},
+                        {"title": "Unknown | section", "print_page": 3, "sequence": 2},
+                    ],
+                }],
+                "back_matter": [
+                    {"title": "Index", "print_page": 10},
+                    {"title": "Other Books You May Enjoy", "print_page": 11},
+                ],
+            }
+            rendered, audit = toc_repair.render_toc(entries, toc, root)
+            self.assertIn("> Source PDF, pp. 8-13", rendered)
+            self.assertIn("| Section | Print page |", rendered)
+            self.assertIn("[First section](<../01_Part 1/Chapter 01 - A Book.md#First section>)", rendered)
+            self.assertIn("| Unknown \\| section | 3 |", rendered)
+            self.assertIn("[Index](<../04_Back Matter/01_Index.md>)", rendered)
+            self.assertEqual(audit["counts"]["linked_sections"], 1)
+            self.assertEqual(audit["counts"]["linked_back_matter"], 2)
+            self.assertEqual(len(audit["unmatched_sections"]), 1)
+
+    def test_toc_renderer_does_not_link_replacement_character_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            toc = root / "TOC.md"
+            toc.write_text("---\ntype: paratext\n---\n", encoding="utf-8")
+            chapter = root / "Chapter 02 - A Book.md"
+            chapter.write_text("# A Book\n## Walking through the VS IDE��s UI\n", encoding="utf-8")
+            entries = {
+                "toc_pdf_pages": [1, 1],
+                "parts": [{"number": 1, "title": "Part 1"}],
+                "chapters": [{
+                    "number": 2, "title": "A Book", "print_page": 1,
+                    "part_number": 1,
+                    "sections": [{
+                        "title": "Walking through the VS IDE��s UI",
+                        "print_page": 2,
+                        "sequence": 1,
+                    }],
+                }],
+                "back_matter": [],
+            }
+            rendered, audit = toc_repair.render_toc(entries, toc, root)
+            self.assertIn("| Walking through the VS IDE��s UI | 2 |", rendered)
+            self.assertEqual(audit["counts"]["unmatched_sections"], 1)
+
+    def test_toc_apply_rejects_stale_preview_and_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            toc = root / "TOC.md"
+            chapter = root / "Chapter 01 - A Book.md"
+            entries = root / "entries.json"
+            preview = root / "preview.json"
+            backup = root / "backup.zip"
+            report = root / "apply.json"
+            toc.write_text("---\ntype: paratext\n---\n", encoding="utf-8")
+            chapter.write_text("# A Book\n## First section\n", encoding="utf-8")
+            entries.write_text(json.dumps({
+                "toc_pdf_pages": [1, 1],
+                "parts": [{"number": 1, "title": "Part 1"}],
+                "chapters": [{
+                    "number": 1, "title": "A Book", "print_page": 1,
+                    "part_number": 1,
+                    "sections": [{"title": "First section", "print_page": 2, "sequence": 1}],
+                }],
+                "back_matter": [],
+            }), encoding="utf-8")
+            preview_report = toc_repair.preview(toc, entries, root)
+            toc_repair.write_json(preview, preview_report)
+            toc.write_text(toc.read_text(encoding="utf-8") + "manual drift\n", encoding="utf-8")
+            with self.assertRaises(RuntimeError):
+                toc_repair.apply_change(toc, entries, root, preview, backup, None)
+            toc.write_text("---\ntype: paratext\n---\n", encoding="utf-8")
+            toc_repair.apply_change(toc, entries, root, preview, backup, None)
+            second_preview = toc_repair.preview(toc, entries, root)
+            self.assertFalse(second_preview["changed"])
+            self.assertTrue(backup.exists())
 
 
 if __name__ == "__main__":

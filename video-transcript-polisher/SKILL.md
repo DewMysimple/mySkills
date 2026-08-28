@@ -48,6 +48,14 @@ Treat proper names, product names, tool names, API names, function names, labels
 - Remove only obvious non-semantic ASR noise: pure hesitation sounds, duplicated partial fragments, or accidental repeated words that do not convey emphasis. Keep meaningful repetition, emphasis, self-correction, hedging, transitions, and natural spoken logic.
 - Do not turn ordinary spoken connectors such as “so,” “now,” or “let's take a look” into deletions by default; remove them only when they are clearly empty noise in context.
 
+### Semantic paragraph quality gate
+
+- Treat a paragraph as one readable unit of thought with one dominant communicative purpose, such as setup, explanation, example, analysis, implication, or transition. This is a readability heuristic, not permission to summarize or remove spoken content.
+- When a block contains more than one independent move—especially background plus example, example plus result, several method steps, a contrast, or a conclusion followed by a transition—split it at the semantic boundary while preserving every sentence and its order.
+- Re-evaluate boundaries around explicit discourse signals such as “for example,” “in contrast,” “and lastly,” “this tells me,” “in addition,” and similar language in the transcript's own language. Do not split merely because one of these words appears if the surrounding sentences form one tightly coupled thought.
+- A run of roughly 6–8 complete sentences or about 800–1000 English characters is a warning to inspect the paragraph for multiple thought units. Apply a comparable visible-length judgment in other languages. These are review triggers, not mechanical maximums; retain a long paragraph when it is genuinely one coherent argument and record the reason only in the internal review.
+- Do not fall back to one-sentence-per-paragraph formatting. Keep directly coupled setup and explanation together, preserve meaningful spoken transitions, and never split code blocks, quotations, timestamp units, or speaker turns in a way that damages their structure.
+
 ## Light Markdown structure
 
 - Use headings as sparse navigational markers, not as a summary or outline of the lecture. Do not add a generated heading at the opening; the transcript must begin first after the required leading blank line.
@@ -125,6 +133,7 @@ When the user confirms a multi-agent batch:
 - Have one processing agent read and process one complete input file. Do not split one file across agents.
 - Store candidate outputs in an isolated task-specific temporary directory; do not let subagents write the final `processed` or Analysis targets.
 - After each processing wave, use an independent review pass to compare each candidate with its source for omissions, reordering, unsupported corrections, summaries, and formatting violations. Review agents report findings and do not rewrite final files.
+- For longer files, require each processing agent to make an internal paragraph map and identify any long-block warnings before reporting completion. The map is a review aid, not output content.
 - Choose concurrency dynamically from the assessment. When parallel processing is worthwhile, use bounded waves such as 4–8 files; this range is an execution limit, not the trigger for enabling multi-agent work.
 - The main agent resolves reviewer disagreements and performs the final consistency check before any formal write.
 - If a key file, review, mapping, or validation fails, stop the entire batch and do not perform partial formal writes.
@@ -150,6 +159,13 @@ Assign each candidate to one independent reviewer and track the reviewer status 
 - If the reviewer still produces no report after the retry, close the reviewer and perform an equivalent main-agent review. Record the result internally as `main-takeover`; do not add that label or any uncertainty note to the clean transcript.
 - A review `FAIL` requires a targeted candidate correction followed by another review. Do not silently skip a failed file while writing the rest of the batch.
 - Formal writing requires every file to be independently reviewed or explicitly marked `main-takeover` with a passing main-agent review.
+
+### Paragraph-quality review
+
+- Review paragraph structure separately from transcription fidelity. For every candidate, check whether each paragraph has one dominant purpose and whether topic, example, method step, contrast, result, implication, or transition changes have clear boundaries.
+- Treat a long-block warning or a paragraph containing multiple independent moves as a required review finding, even when no words are missing. The reviewer must either confirm that the block is one coherent argument or request a targeted reflow.
+- A targeted reflow may move existing sentences, restore punctuation or spacing, and add only otherwise-permitted sparse headings or explicit lists. It must not summarize, expand, reorder, or introduce new content.
+- After any requested reflow, repeat the paragraph-quality and fidelity review. A candidate is not review-passed until both checks pass; candidate presence alone is never sufficient.
 
 ## Approved-output backfill mode
 
@@ -190,7 +206,7 @@ M2-02.md → Analysis-M2-02.md
 1. Read the entire input and identify its language, existing Markdown structure, timestamps, speakers, and recurring terminology.
 2. Make a conservative internal pass for likely ASR errors. Resolve only high-confidence word-level corrections; preserve ambiguous wording.
 3. Apply minimal punctuation, sentence-boundary, capitalization, and spacing fixes.
-4. Group the unchanged sequence of ideas into topic-coherent paragraphs, then add only justified two-level headings or explicit lists. Keep the opening free of generated headings.
+4. Build an internal semantic paragraph map, group the unchanged sequence of ideas into topic-coherent paragraphs, inspect long-block warnings, and then add only justified two-level headings or explicit lists. Keep the opening free of generated headings.
 5. Apply the output wrapper: use exactly one leading blank line for ordinary transcripts, or preserve required leading metadata and place exactly one blank line before the transcript body.
 6. Compare the result against the source before saving: confirm that no claims, examples, numbers, dates, names, or meaningful spoken content were omitted, reordered, invented, or turned into a summary.
 7. Save only the clean Markdown output at the requested destination or the default `processed/` destination. Never overwrite the source by default.

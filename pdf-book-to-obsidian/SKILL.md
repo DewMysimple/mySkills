@@ -21,6 +21,9 @@ Remember these rules without asking the user to repeat them:
 - Low-risk layout cleanup may be automatic; structural or semantic uncertainty requires discussion.
 - After generation, check order, missing content, links, assets, code fences, tables, and overall readability.
 - Treat image placement, source-reference style, and Figure-caption style as book-specific choices. When coordinates are available, coordinate-ordered placement is a strong default for illustrated books, but the Agent must review ambiguous pages.
+- Distinguish small images embedded in a text line from independent figures. In
+  Obsidian mode, a clearly line-overlapping icon stays inline with the sentence;
+  uncertain image roles are preserved and reported.
 
 ## Required Agent workflow
 
@@ -40,7 +43,19 @@ Treat the PDF extraction as evidence, not as the final interpretation. Code may 
 - normal prose for ordinary paragraphs;
 - column-aware ordering for multi-column pages;
 - fenced code for confirmed code blocks;
-- visual-table reconstruction only when geometry and headers support it;
+- visual-table reconstruction only when geometry, stable columns, and explicit
+  headers support it. A configured region is not required: when enabled, the
+  helper may discover high-confidence closed grids across the PDF;
+- conversion of clearly labelled rounded editorial boxes to Obsidian Callouts.
+  Filled code rectangles, UML/diagram boxes, and unlabelled boxes remain
+  source-preserving candidates in the report;
+- maintenance-time visual tables are only patched when the PDF preview and
+  current Markdown identify one unique source region. A grid containing
+  images inside cells is kept for Agent review because text-only reconstruction
+  cannot safely preserve those images;
+- removal of repeated page-edge headers/footers only when their position,
+  repetition, and page-number pattern make the PDF chrome unambiguous;
+- joining only coordinate-confirmed adjacent inline-code URL fragments;
 - conservative list-to-table conversion only when the structure is clear and the user accepts it;
 - source-preserving fallback for uncertain regions.
 
@@ -70,6 +85,9 @@ The Agent must not rewrite the whole book. When a region is ambiguous, preserve 
 - If a generated file was manually edited or its recorded content changed, stop and report the conflict instead of overwriting it.
 - For scans or unreliable text layers, pause and ask whether to use an OCR-processed source. Do not silently OCR.
 - Keep source and generated hashes, configuration/plan identity, and a recoverable backup for maintenance, but do not burden the normal conversation with implementation fields.
+- A full-book backup includes the current Markdown system, source, attachments,
+  reports, and configuration, but excludes the existing backup directory itself
+  to avoid recursively copying historical ZIP backups and exhausting disk space.
 
 ## Existing Markdown layout repair
 
@@ -92,10 +110,48 @@ preserving each original marker. Keep necessary blank lines for code, images,
 tables, blockquotes, nested lists, multi-paragraph items, or ambiguous
 list/paragraph boundaries.
 
+When repairing an existing book, the Agent may select
+`--source-reference-style plain-blockquote` to migrate legacy linked source
+references to `> Source PDF, p. N`. The repair helper removes only repeated
+same-page references in a local metadata/header block; references separated by
+meaningful content remain. This is a presentation choice for the selected
+repair pass and does not change YAML provenance or the source PDF.
+
+Table-of-contents pages receive a conservative cleanup: clear emphasis and
+PDF control-character fragments may be removed, but uncertain multi-column
+entry boundaries, nesting, page order, and internal links are not inferred.
+Such regions remain unchanged or are recorded for Agent review.
+
+When a book's TOC has reliable chapter/section boundaries, printed page
+numbers, and usable column geometry, the Agent may propose a navigable
+chapter-table representation. This is conditional, not a universal output
+requirement: preserve the original TOC when its structure is ambiguous, and
+let the user choose between preservation and a table layout. A useful option
+is one `Section / Print page` table per chapter, grouped under Part headings.
+Reconstruct double-column TOCs in visual reading order, sort entries by
+printed page while preserving same-page order, and use standard Markdown
+links in table cells when linking avoids Wiki-link pipe ambiguity. Link a
+chapter or subsection only when one existing file or heading matches after
+conservative typography normalization; leave unmatched entries as plain text
+and record them as uncertain. Keep the source-page provenance and compare
+entry counts before applying. The reusable helper is
+`scripts/toc_table_repair.py`; its preview must be reviewed before a scoped
+TOC replacement.
+
 For clear block-leading editorial labels such as `Note`, `Tip`, `Warning`, or
-`Example`, use Obsidian Callouts in the default baseline. Do not convert words
-such as “note” inside ordinary prose. Labels inside lists, tables, or code are
-ambiguous and must remain unchanged for Agent review.
+`Example`, and for visibly boxed labels such as `Tips or important notes`, use
+Obsidian Callouts in the default baseline. Do not convert words such as “note”
+inside ordinary prose. Labels inside lists, tables, or code are ambiguous and
+must remain unchanged for Agent review.
+
+For programming and technical books, the Agent may recommend formatting
+clearly identified keyboard-shortcut entries as complete inline-code spans,
+for example ``- `Ctrl + C`: Copies the selected text``. Apply this only when
+the surrounding section and the extracted key tokens make the interpretation
+clear; preserve ordinary emphasis and non-technical lists. Standalone
+emphasis-only labels that clearly introduce a shortcut subsection may become
+the next appropriate Markdown heading level. This is a book-specific
+presentation choice, not a universal rule for every Markdown conversion.
 
 ## Helper scripts
 
@@ -107,18 +163,48 @@ dry-run <vault> --book <book> [--stages ...]
 apply <vault> --book <book> --confirm-apply [--copy-source]
 dry-run <vault> --book <book> --only-chapters 1,2
 apply <vault> --book <book> --only-chapters 1,2 --allow-generated-drift --confirm-apply
+dry-run <vault> --book <book> --only-sections foreword,contributors
+apply <vault> --book <book> --only-sections foreword,contributors --allow-generated-drift --confirm-apply
 audit <vault> --book <book>
 rollback <vault> --book <book> --backup <zip> --confirm-rollback
 ```
 
+For a partial Markdown repair, repeat `--include <relative-file.md>` on the
+layout-repair helper for each selected content file. The paths are relative to
+the selected book root; this is a scope control, not a book-specific path
+convention.
+
+For PDF-backed visual structure repairs, first run
+`scripts/markdown_structure_repair.py preview` with the pipeline structure
+preview, then apply only after reviewing its exact table-region replacements.
+The helper preserves existing Callouts and reports boxed regions whose body
+cannot be uniquely located. It never replaces a whole Markdown file.
+
+For an existing illustrated book whose chapter files have been manually
+formatted after generation, use `scripts/markdown_image_repair.py` for a
+coordinate-backed image-only maintenance pass. It compares the current
+standalone image and Figure-caption blocks with a fresh PDF coordinate render,
+then moves only the matching source-reference/image/caption block into the
+correct local position. It preserves prose, code, tables, Callouts, inline
+icons, attachments, and manual formatting. The helper requires a reviewed
+preview, refuses unresolved image/caption relationships, checks source/config
+and target hashes before writing, and creates a lightweight ZIP containing the
+selected Markdown files and configuration. It is appropriate when a full
+chapter regeneration would overwrite known manual drift.
+
 For new work, the helper also accepts an explicit PDF and arbitrary output root through `--source` and `--output-root`; the Agent should use that only after the user has selected the destination. Read [references/config-schema.md](references/config-schema.md) for the small internal plan/config contract, [references/obsidian-markdown-baseline.md](references/obsidian-markdown-baseline.md) for Obsidian syntax, [references/output-contract.md](references/output-contract.md) for generated-file expectations, and [references/maintenance-protocol.md](references/maintenance-protocol.md) when updating an existing conversion.
 
-For a partial regeneration, use `--only-chapters` only after the user has
-confirmed the scope. The helper skips non-chapter outputs, records the scope,
-and merges the selected file records into the existing manifest. A drifted
-generated chapter may be replaced only with the explicit
+For a partial regeneration, use `--only-chapters` or `--only-sections` only
+after the user has confirmed the scope. Section selection uses the stable ids
+declared in the book configuration. A scoped run skips unrelated chapter,
+attachment, Lens, topic-index, and MOC outputs, records the selected scope,
+and merges chapter-scope records into the existing manifest. Section-only
+maintenance keeps its changed-file records in the dedicated apply report so a
+legacy chapter manifest is not expanded implicitly. A drifted
+generated chapter or section may be replaced only with the explicit
 `--allow-generated-drift` flag; this flag cannot authorize a full regeneration
-or a non-generated/manual file.
+or a non-generated/manual file. The two scope selectors are mutually
+exclusive.
 
 The generator supports these optional output choices:
 
@@ -131,6 +217,21 @@ The generator supports these optional output choices:
   `append` (legacy compatibility).
 - `callout_style`: `obsidian-callout` (default in Obsidian mode), `plain`, or
   `none`.
+- `inline_image_policy`: `auto` (classify only clear text-overlapping icons) or
+  `block` (force all images to remain block-level).
+- `inline_image_syntax`: `obsidian-wiki` (default for Obsidian) or `markdown`.
+- `visual_tables.discovery`: `auto` (default when visual tables are enabled)
+  or `off`. Auto discovery converts only high-confidence closed grids with
+  stable column boundaries and a complete header row; rejected candidates are
+  recorded rather than forced into tables.
+- `boxed_callout_policy`: `auto` (default) or `off`. Auto recognizes labelled
+  rounded editorial boxes and emits Obsidian Callouts; it does not treat every
+  rectangle or diagram as a Callout.
+- `shortcut_style` (layout repair): `preserve` by default, or `inline-code`
+  when the Agent and user select complete inline-code formatting for clearly
+  identified keyboard-shortcut lists in a technical book.
+- `source_reference_style` (layout repair): `preserve` by default, or
+  `plain-blockquote` for a confirmed migration of legacy linked PDF references.
 
 These choices affect presentation only; they do not authorize the Agent or
 the code to invent, translate, summarize, or reorder source content.
