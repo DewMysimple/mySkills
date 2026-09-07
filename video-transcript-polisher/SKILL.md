@@ -1,6 +1,6 @@
 ---
 name: video-transcript-polisher
-description: Conservatively polish Whisper or ASR lecture transcripts into readable Markdown while preserving the source wording, order, and meaning. Use for transcript cleanup, not summarizing, translating, or rewriting; read the batch or backfill reference only when that mode is actually needed.
+description: Faithfully polish Whisper or ASR lecture transcripts into readable Markdown with balanced section structure while preserving the source wording, order, and meaning. Use for transcript cleanup, not summarizing, translating, or rewriting; read the batch or backfill reference only when that mode is actually needed.
 ---
 
 # Video Transcript Polisher
@@ -19,7 +19,7 @@ Polish video-course and classroom transcripts into a readable, searchable record
 1. Read the complete file before editing. Identify its language, existing Markdown, timestamps, speakers, and recurring terminology.
 2. Make a conservative internal pass for likely ASR errors. Correct a word only when context, grammar, repeated terminology, or a uniquely identified reference makes the intended word clear.
 3. Apply only necessary punctuation, sentence-boundary, capitalization, spacing, and paragraph changes.
-4. Add sparse Markdown structure only when supported by the source.
+4. Map the source's topic phases before formatting, then add balanced Markdown structure: use headings for clear sustained topic changes or independent method phases, and use lists for explicit parallel or ordered items.
 5. Compare the result with the source before saving. Confirm that no claims, examples, numbers, names, meaningful spoken content, or idea order were lost or invented.
 6. Save only the clean output at the requested destination or the default `processed/` destination.
 
@@ -37,8 +37,10 @@ Polish video-course and classroom transcripts into a readable, searchable record
 - Make each paragraph one coherent unit of thought. Split at real boundaries between setup, explanation, example, method step, contrast, result, implication, or transition, while preserving every sentence and its order.
 - Treat a long block of roughly 6–8 complete sentences or 800–1000 English characters as a review trigger, not a mechanical limit. Do not force one sentence per paragraph or split code, quotations, timestamps, or speaker turns destructively.
 - Preserve timestamps, speaker labels, code spans/blocks, quotations, existing headings, and useful metadata near their original positions.
-- Use only sparse `#` and `##` headings for sustained topic changes or independent method phases. Build generated headings from nearby source wording; never introduce a fact or conclusion. Preserve existing `#` and `##` headings, and normalize deeper headings to `##` only when needed.
-- Create ordered or unordered lists only when the speaker clearly presents ordered or parallel items. Do not manufacture tables, callouts, bolding, italics, or decorative structure.
+- Use a balanced amount of `#` and `##` structure for navigation, not zero structure by default and not a heading for every paragraph. Use `#` for a source-provided or user-requested document title; use `##` for each clear sustained topic, independent example, or method phase. For a transcript with several distinct phases, normally produce roughly 2–6 section headings, with 0 allowed only when no meaningful phase boundary exists.
+- Build generated headings from nearby source wording; normalize them for readability but never introduce a fact, conclusion, or topic absent from the transcript. Preserve existing `#` and `##` headings, and normalize deeper headings to `##` only when needed.
+- Create ordered or unordered lists when the speaker clearly presents ordered or parallel items, such as named design patterns or explicit workflow steps. Do not manufacture tables, callouts, bolding, italics, or decorative structure.
+- Before saving, check heading coverage: if the transcript contains multiple sustained topics but the output has no headings, revisit the topic map and add the smallest useful set of headings.
 
 ## Output wrapper
 
