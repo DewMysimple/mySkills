@@ -38,8 +38,12 @@ mySkills/
 ├── AGENTS.md
 ├── README.md
 ├── README.en.md
+├── wiki_memory/                       # 工程 Agent 的持久记忆
 └── video-transcript-polisher/
     ├── SKILL.md
+    ├── references/
+    │   ├── approved-output-backfill.md
+    │   └── batch-review.md
     └── agents/
         └── openai.yaml
 ```
@@ -48,7 +52,7 @@ mySkills/
 
 ## 新增 Skill
 
-新增 Skill 时，为它创建独立的一级目录，并至少包含一个 `SKILL.md`。如果需要，可以添加 `agents/openai.yaml` 或其他直接服务于该 Skill 的资源。创建或修改 Skill 时遵循 `skill-creator` 的规范，并在提交前完成结构和内容验证。
+新增 Skill 时，为它创建独立的一级目录，并至少包含一个 `SKILL.md`。如果需要，可以添加 `agents/openai.yaml` 或其他直接服务于该 Skill 的资源。创建或修改 Skill 时遵循 `skill-creator` 的规范，并在提交前完成结构和内容验证。仓库级工程记忆位于 [wiki_memory/](wiki_memory/README.md)。
 
 ## 项目地址
 

@@ -38,8 +38,12 @@ mySkills/
 ├── AGENTS.md
 ├── README.md
 ├── README.en.md
+├── wiki_memory/                       # Persistent engineering memory
 └── video-transcript-polisher/
     ├── SKILL.md
+    ├── references/
+    │   ├── approved-output-backfill.md
+    │   └── batch-review.md
     └── agents/
         └── openai.yaml
 ```
@@ -48,7 +52,7 @@ The repository follows a “one Skill per top-level directory” structure. Pers
 
 ## Adding a Skill
 
-Create a dedicated top-level directory for every new Skill and include at least a `SKILL.md`. Add `agents/openai.yaml` or other resources only when they directly support the Skill. Follow the `skill-creator` guidance when creating or updating a Skill, and complete structural and content checks before committing.
+Create a dedicated top-level directory for every new Skill and include at least a `SKILL.md`. Add `agents/openai.yaml` or other resources only when they directly support the Skill. Follow the `skill-creator` guidance when creating or updating a Skill, and complete structural and content checks before committing. Repository-level engineering memory lives in [wiki_memory/](wiki_memory/README.md).
 
 ## Repository
 

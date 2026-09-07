@@ -14,6 +14,7 @@ The current Skill, `video-transcript-polisher`, faithfully polishes Whisper/ASR 
 - `README.en.md` is the English translation for people who request or prefer English documentation.
 - For routine engineering or Skill tasks, do not read both README files. Read only the relevant language version when a repository overview is needed; prefer `README.md` by default.
 - Treat this `AGENTS.md` as the source for agent-specific repository rules. Do not use README content as a substitute for these instructions.
+- `wiki_memory/AGENTS.md` defines the engineering-memory protocol. At the start of a substantial task, read it and the relevant pages under `wiki_memory/当前状态/`; load decisions, knowledge pages, and logs only as needed.
 
 ## Directory management
 
@@ -28,4 +29,10 @@ The current Skill, `video-transcript-polisher`, faithfully polishes Whisper/ASR 
 - Keep source lecture transcripts unchanged by default. Put local processed copies in a sibling `processed/` directory unless the user requests another destination.
 - Treat lecture samples and processed copies as local working materials; do not copy or stage them by default.
 - After changing a Skill, run applicable validation, including `skill-creator`'s `quick_validate.py`. If a dependency is unavailable, record the reason and complete feasible manual checks.
-- Review the diff before committing. Commit, push, or perform other external Git operations only when the user explicitly requests them.
+- Review the diff and run applicable validation before completing a change. This repository's agreed convention is: after one complete conversation has produced a coherent repository modification, commit and push that change to the configured remote. Do not push partial, failed, or unrelated work; if the push fails, report the failure and preserve the local commit.
+
+## Engineering memory
+
+- Keep durable project facts in `wiki_memory/当前状态/`, confirmed design choices in `wiki_memory/决策/`, stable working knowledge in `wiki_memory/知识/`, and task history in `wiki_memory/日志/`.
+- After a substantive task, append one concise log entry and refresh the log index with `python wiki_memory/工具/memory_lint.py index`.
+- Run `python wiki_memory/工具/memory_lint.py check` before completing a memory change. Do not delete historical logs or overwrite an active decision without explicit authorization.
