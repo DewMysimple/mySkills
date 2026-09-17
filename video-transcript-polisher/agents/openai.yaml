@@ -1,4 +1,4 @@
 interface:
   display_name: "Video Transcript Polisher"
   short_description: "Polish ASR transcripts with faithful meaning and structure"
-  default_prompt: "Use $video-transcript-polisher to polish this transcript, preserving its meaning while adding restrained headings for clear topic changes; do not summarize, translate, or rewrite it."
+  default_prompt: "Use $video-transcript-polisher to polish this transcript faithfully, respect my requested formatting, and add restrained headings only when clear topic changes make them useful; do not summarize, translate, or rewrite it."

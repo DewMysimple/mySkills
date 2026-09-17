@@ -3,7 +3,7 @@ type: moc
 status: active
 kind: process
 importance: high
-updated: 2026-09-07
+updated: 2026-09-17
 topic: work-log-index
 source_logs: []
 supersedes: null
@@ -15,6 +15,7 @@ supersedes: null
 
 | 时间 | 类型 | 目标 | 状态 | 主题 | 日志 |
 | --- | --- | --- | --- | --- | --- |
+| 2026-09-17 | maintenance | 减少 video-transcript-polisher 的机械格式化倾向，并提高高风险 ASR 纠错的证据门槛。 | archived | transcript-polisher-heuristics | [[日志/2026-09-17-收紧视频转录技能启发式规则.md|2026-09-17｜收紧视频转录技能启发式规则]] |
 | 2026-09-07 | maintenance | 解决 video-transcript-polisher 处理连续课程转写时只有段落、没有标题层级的问题。 | archived | transcript-structure-balance | [[日志/2026-09-07-调整视频转录技能结构化平衡.md|2026-09-07｜调整视频转录技能结构化平衡]] |
 | 2026-09-07 | maintenance | 根据工程记忆结构理论建立 mySkills 的持久记忆，并解决 video-transcript-polisher 入口过于复杂的问题。 | archived | skill-maintenance-and-memory | [[日志/2026-09-07-精简视频转录技能并建立工程记忆.md|2026-09-07｜精简视频转录技能并建立工程记忆]] |
 
