@@ -4,6 +4,7 @@ import contextlib
 import hashlib
 import io
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -119,6 +120,73 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(code, 0, error)
         self.assertFalse(any("root instructions" in x for x in json.loads(output)["warnings"]))
 
+    def test_unmarked_legacy_memory_refuses_competing_initialization(self):
+        legacy = self.project / "docs/wiki_memory"
+        (legacy / "当前状态").mkdir(parents=True)
+        (legacy / "AGENTS.md").write_text("Existing memory protocol\n", encoding="utf-8")
+        (self.project / "AGENTS.md").write_text("Read `docs/wiki_memory/AGENTS.md`.\n", encoding="utf-8")
+        before = self.snapshot()
+        for args in ((), ("--apply",)):
+            code, _, error = self.run_cli("init", *args)
+            self.assertEqual(code, 2)
+            self.assertIn("existing memory found at docs/wiki_memory", error)
+            self.assertEqual(before, self.snapshot())
+
+    def test_custom_legacy_path_with_spaces_is_discovered(self):
+        legacy = self.project / "notes/工程 记忆"
+        (legacy / "当前状态").mkdir(parents=True)
+        (legacy / "AGENTS.md").write_text("Existing protocol\n", encoding="utf-8")
+        (self.project / "AGENTS.md").write_text("Read [memory](notes/工程%20记忆/AGENTS.md).\n", encoding="utf-8")
+        before = self.snapshot()
+        self.assertEqual(self.run_cli("init", "--apply")[0], 2)
+        self.assertEqual(before, self.snapshot())
+
+    def test_conventional_memory_is_discovered_without_root_hook(self):
+        (self.root / "当前状态").mkdir(parents=True)
+        (self.root / "AGENTS.md").write_text("Existing protocol\n", encoding="utf-8")
+        before = self.snapshot()
+        self.assertEqual(self.run_cli("init", "--memory-dir", "docs/wiki_memory", "--apply")[0], 2)
+        self.assertEqual(before, self.snapshot())
+
+    def test_legacy_memory_referenced_by_readme_is_discovered(self):
+        legacy = self.project / "notes/project-memory"
+        (legacy / "当前状态").mkdir(parents=True)
+        (legacy / "AGENTS.md").write_text("Existing protocol\n", encoding="utf-8")
+        (legacy / "README.md").write_text("Existing entry\n", encoding="utf-8")
+        (self.project / "AGENTS.md").write_text("Read [memory](notes/project-memory/README.md).\n", encoding="utf-8")
+        before = self.snapshot()
+        self.assertEqual(self.run_cli("init", "--apply")[0], 2)
+        self.assertEqual(before, self.snapshot())
+
+    def test_literal_percent_in_legacy_path_is_not_url_decoded(self):
+        legacy = self.project / "notes/memory%20literal"
+        (legacy / "当前状态").mkdir(parents=True)
+        (legacy / "AGENTS.md").write_text("Existing protocol\n", encoding="utf-8")
+        (self.project / "AGENTS.md").write_text("Read `notes/memory%20literal/AGENTS.md`.\n", encoding="utf-8")
+        before = self.snapshot()
+        self.assertEqual(self.run_cli("init", "--apply")[0], 2)
+        self.assertEqual(before, self.snapshot())
+
+    def test_ordinary_nested_rules_and_external_links_do_not_block_init(self):
+        (self.project / "src").mkdir()
+        (self.project / "src/AGENTS.md").write_text("Source rules\n", encoding="utf-8")
+        (self.project / "AGENTS.md").write_text('Read `src/AGENTS.md`, [docs](https://example.com/docs), and `a < b`.\n', encoding="utf-8")
+        self.init()
+
+    def test_similar_but_wrong_memory_hook_is_reported(self):
+        self.init()
+        agents = self.project / "AGENTS.md"
+        agents.write_text(memory.read_text(agents).replace("wiki_memory/AGENTS.md", "docs/wiki_memory/AGENTS.md")
+                          .replace("wiki_memory/入口.md", "docs/wiki_memory/入口.md"), encoding="utf-8")
+        self.assertTrue(any("lack memory hook" in x for x in self.check()[1]["warnings"]))
+
+    def test_dot_relative_memory_hook_is_recognized(self):
+        self.init()
+        agents = self.project / "AGENTS.md"
+        agents.write_text(memory.read_text(agents).replace("wiki_memory/AGENTS.md", "./wiki_memory/AGENTS.md")
+                          .replace("wiki_memory/入口.md", "./wiki_memory/入口.md"), encoding="utf-8")
+        self.assertFalse(any("lack memory hook" in x for x in self.check()[1]["warnings"]))
+
     def test_unsafe_memory_paths_do_not_write(self):
         for path in ("..", "../escape", ".", "C:/outside", "/absolute", "wiki_memory/../../escape", "bad`name"):
             with self.subTest(path=path):
@@ -180,6 +248,88 @@ class MemoryTests(unittest.TestCase):
         before = self.snapshot()
         self.assertEqual(self.run_cli("index", "--apply")[0], 2)
         self.assertEqual(before, self.snapshot())
+
+    def test_managed_navigation_damage_is_reported_by_check(self):
+        self.init()
+        entry = self.root / memory.ENTRY
+        original = memory.read_text(entry)
+        variants = [original.replace(memory.AUTO_START, ""), original + memory.AUTO_END,
+                    original.replace(memory.AUTO_START, "TEMP").replace(memory.AUTO_END, memory.AUTO_START).replace("TEMP", memory.AUTO_END)]
+        for text in variants:
+            with self.subTest(text=text[-100:]):
+                entry.write_text(text, encoding="utf-8")
+                before = self.snapshot()
+                self.assertTrue(any("invalid auto region" in x for x in self.check()[1]["errors"]))
+                self.assertEqual(self.run_cli("index", "--apply")[0], 2)
+                self.assertEqual(before, self.snapshot())
+
+    def test_legacy_pages_without_config_need_no_auto_markers(self):
+        self.init()
+        (self.root / ".memory.json").unlink()
+        for rel in (memory.ENTRY, memory.LOG_INDEX):
+            path = self.root / rel
+            path.write_text(memory.read_text(path).replace(memory.AUTO_START, "").replace(memory.AUTO_END, ""), encoding="utf-8")
+        self.assertEqual(self.check()[1]["errors"], [])
+
+    def test_managed_navigation_must_remain_an_active_moc(self):
+        self.init()
+        entry = self.root / memory.ENTRY
+        entry.write_text(memory.read_text(entry).replace("type: moc", "type: knowledge"), encoding="utf-8")
+        before = self.snapshot()
+        self.assertTrue(any("navigation must be an active MOC" in x for x in self.check()[1]["errors"]))
+        self.assertEqual(self.run_cli("index", "--apply")[0], 2)
+        self.assertEqual(before, self.snapshot())
+
+    def test_log_table_has_four_cells_and_resolvable_markdown_links(self):
+        self.init()
+        log = self.add_page("日志/2026-10-07-问题#%.md", "log", "archived", extra="\nkind: bug\ntask_status: completed")
+        log.write_text(memory.read_text(log).replace("# 2026-10-07-问题#%", r"# 修复 \| [renderer]"), encoding="utf-8")
+        original = log.read_bytes()
+        self.assertEqual(self.run_cli("index", "--apply")[0], 0)
+        table = memory.read_text(self.root / memory.LOG_INDEX)
+        row = next(line for line in table.splitlines() if line.startswith("| 2026-10-07"))
+        self.assertEqual(len(re.split(r"(?<!\\)\|", row)) - 2, 4)
+        pages = memory.load_pages(self.root)
+        source = next(p for p in pages if p.path == memory.LOG_INDEX)
+        targets = [memory.resolve_target(kind, target, source, self.project, self.root, pages) for kind, target in memory.links(row)]
+        self.assertEqual(targets, [log])
+        self.assertEqual(self.check()[1]["errors"], [])
+        self.assertEqual(log.read_bytes(), original)
+
+    def test_moc_defaults_apply_to_new_indexes_and_preserve_existing_metadata(self):
+        self.init()
+        config = self.root / ".memory.json"
+        data = json.loads(memory.read_text(config))
+        data["moc_defaults"] = {"kind": "process", "importance": "high"}
+        config.write_text(json.dumps(data), encoding="utf-8")
+        entry = self.root / memory.ENTRY
+        entry.write_text(memory.read_text(entry).replace("type: moc", "type: moc\nkind: ui") + "\nKeep my manual note.\n", encoding="utf-8")
+        manual_tail = entry.read_bytes().split(memory.AUTO_END.encode(), 1)[1]
+        self.add_page("知识/new.md")
+        self.add_page("当前状态/history.md", "state", "superseded", topic="old-state")
+        self.assertEqual(self.run_cli("index", "--apply")[0], 0)
+        for page_type in ("knowledge", "state"):
+            path = memory.CATALOGS[page_type][0]
+            page = memory.parse_page(path, memory.read_text(self.root / path))
+            self.assertEqual(page.fields["kind"], "process")
+            self.assertEqual(page.fields["importance"], "high")
+        self.assertIn("kind: ui", memory.read_text(entry))
+        self.assertTrue(entry.read_bytes().endswith(manual_tail))
+        self.assertEqual(self.check()[1]["errors"], [])
+
+    def test_invalid_moc_defaults_cannot_write_indexes(self):
+        self.init()
+        self.add_page("知识/new.md")
+        config = self.root / ".memory.json"
+        data = json.loads(memory.read_text(config))
+        for defaults in ([], None, {"type": "knowledge"}, {"kind": ""}, {"importance": ["high"]}):
+            with self.subTest(defaults=defaults):
+                data["moc_defaults"] = defaults
+                config.write_text(json.dumps(data), encoding="utf-8")
+                before = self.snapshot()
+                self.assertTrue(any("moc_defaults" in x for x in self.check()[1]["errors"]))
+                self.assertEqual(self.run_cli("index", "--apply")[0], 2)
+                self.assertEqual(before, self.snapshot())
 
     def test_active_topics_and_padded_adr_numbers(self):
         self.init()
@@ -330,6 +480,46 @@ class MemoryTests(unittest.TestCase):
         self.assertIn("page set changed", error)
         self.assertEqual((self.root / memory.ENTRY).read_bytes(), before_entry)
         self.assertTrue((self.root / "日志/concurrent.md").exists())
+
+    def test_index_detects_config_change_after_validation(self):
+        self.init()
+        self.add_page("知识/new.md")
+        config = self.root / ".memory.json"
+        data = json.loads(memory.read_text(config))
+        data["mode"] = "standard"
+        changed = json.dumps(data).encode("utf-8")
+        original_inspect = memory.inspect
+
+        def race(*args, **kwargs):
+            result = original_inspect(*args, **kwargs)
+            config.write_bytes(changed)
+            return result
+
+        with mock.patch.object(memory, "inspect", side_effect=race):
+            code, _, error = self.run_cli("index", "--apply")
+        self.assertEqual(code, 2, error)
+        self.assertIn("file changed after it was read", error)
+        self.assertEqual(config.read_bytes(), changed)
+        self.assertFalse((self.root / "知识/MOC_知识.md").exists())
+
+    def test_index_detects_config_created_after_validation(self):
+        self.init()
+        self.add_page("知识/new.md")
+        config = self.root / ".memory.json"
+        config.unlink()
+        original_inspect = memory.inspect
+
+        def race(*args, **kwargs):
+            result = original_inspect(*args, **kwargs)
+            config.write_text(json.dumps({"schema_version": 1, "mode": "lite"}), encoding="utf-8")
+            return result
+
+        with mock.patch.object(memory, "inspect", side_effect=race):
+            code, _, error = self.run_cli("index", "--apply")
+        self.assertEqual(code, 2, error)
+        self.assertIn("file changed after it was read", error)
+        self.assertTrue(config.exists())
+        self.assertFalse((self.root / "知识/MOC_知识.md").exists())
 
     def test_initialization_rolls_back_normal_write_failure(self):
         agents = self.project / "AGENTS.md"

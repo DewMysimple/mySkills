@@ -18,7 +18,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 AUTO_START = "<!-- wiki-memory:auto:start -->"
 AUTO_END = "<!-- wiki-memory:auto:end -->"
@@ -31,7 +31,7 @@ STATUSES = {"active", "proposed", "deprecated", "superseded", "archived"}
 KINDS = {"feature", "ui", "bug", "discussion", "test", "maintenance"}
 ENTRY = Path("入口.md")
 LOG_INDEX = Path("日志/MOC_工作日志.md")
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 CATALOGS = {
     "state": (Path("当前状态/MOC_状态.md"), "历史状态目录"),
     "decision": (Path("决策/MOC_决策.md"), "工程决策目录"),
@@ -41,6 +41,7 @@ STATE_TITLES = {
     "lite": ["当前状态"],
     "standard": ["项目概览", "系统架构", "当前约束", "当前待办", "已知问题"],
 }
+_UNREAD = object()
 
 
 @dataclass
@@ -139,7 +140,7 @@ def links(text: str):
     text = without_code(text)
     for match in re.finditer(r"\[\[([^\]]+)\]\]", text):
         yield "wiki", match.group(1).split("|", 1)[0].rstrip("\\").strip()
-    for match in re.finditer(r"\[[^\]\n]*\]\((<[^>]+>|(?:[^()\n]|\([^()\n]*\))+)\)", text):
+    for match in re.finditer(r"\[(?:\\.|[^\]\\\n])*\]\((<[^>]+>|(?:[^()\n]|\([^()\n]*\))+)\)", text):
         target = match.group(1).strip()
         if not target.startswith("<"):
             target = re.split(r'\s+[\"\']', target, maxsplit=1)[0]
@@ -195,6 +196,38 @@ def page_paths(memory: Path) -> list[Path]:
 
 def load_pages(memory: Path) -> list[Page]:
     return [parse_page(path.relative_to(memory), read_text(path)) for path in page_paths(memory)]
+
+
+def refuse_competing_memory(project: Path, memory: Path, instructions: str):
+    candidates = {project / "wiki_memory", project / "docs/wiki_memory"}
+    tokens = [(token, False) for token in re.findall(r"`([^`\r\n]+)`", instructions)]
+    tokens.extend((target, kind == "markdown") for kind, target in links(instructions))
+    tokens.extend((token, False) for token in re.findall(r"(?<![\w./\\-])(?:[\w.-]+[/\\])+(?:AGENTS\.md|入口\.md|README\.md|\.memory\.json)", instructions))
+    for token, encoded in tokens:
+        token = (unquote(token) if encoded else token).replace("\\", "/").rstrip("/")
+        if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", token) or token.startswith("/") or re.search(r'[<>:"|?*]', token):
+            continue
+        if token.endswith(("/AGENTS.md", "/入口.md", "/README.md", "/.memory.json")):
+            token = token.rsplit("/", 1)[0]
+        candidate = project / token
+        try:
+            if within(candidate, project):
+                candidates.add(candidate)
+        except (OSError, ValueError):
+            continue
+    for candidate in sorted(candidates):
+        if candidate.resolve() == memory.resolve() or not candidate.is_dir():
+            continue
+        if (candidate / ".memory.json").is_file() or ((candidate / "AGENTS.md").is_file() and (candidate / "当前状态").is_dir()):
+            rel = candidate.relative_to(project).as_posix()
+            raise ValueError(f"existing memory found at {rel}; inspect/migrate it instead of initializing another location")
+
+
+def has_memory_hook(text: str, relative: str):
+    normalized = text.replace("\\", "/")
+    flags = re.IGNORECASE if os.name == "nt" else 0
+    return all(re.search(r"(?<![\w./-])(?:\./)?" + re.escape(relative + "/" + name) + r"(?![\w.-])", normalized, flags)
+               for name in ("AGENTS.md", "入口.md"))
 
 
 def resolve_target(kind, raw, source: Page, project: Path, memory: Path, pages: list[Page], require_exists=True):
@@ -289,7 +322,7 @@ def supersession_errors(project, memory, pages):
     return errors
 
 
-def inspect(project: Path, memory: Path, pages: list[Page], today: date, stale_days: int, metadata_only=False):
+def inspect(project: Path, memory: Path, pages: list[Page], today: date, stale_days: int, metadata_only=False, *, config_bytes=_UNREAD):
     errors, warnings, active, numbers = [], [], {}, {}
     if not pages:
         errors.append("memory directory contains no Markdown pages")
@@ -377,16 +410,33 @@ def inspect(project: Path, memory: Path, pages: list[Page], today: date, stale_d
         if str(page.fields.get("type", "")) in {"state", "decision", "knowledge", "log"} and page.rel not in reachable:
             warnings.append(f"{page.rel}: unreachable from memory entry")
     config = memory / ".memory.json"
-    if config.exists():
+    if config_bytes is _UNREAD:
+        config_bytes = observed_bytes(config)
+    if config_bytes is not None:
         try:
             if not within(config, memory):
                 raise ValueError("configuration escapes memory directory")
-            data = json.loads(read_text(config).lstrip("\ufeff"))
+            data = json.loads(config_bytes.decode("utf-8-sig"))
             if not isinstance(data, dict) or data.get("schema_version") != 1 or data.get("mode") not in {"lite", "standard"}:
                 raise ValueError("unsupported schema_version or mode")
             if data.get("tool_version") not in {None, VERSION}:
                 warnings.append(f"project tool version {data.get('tool_version')} differs from running version {VERSION}; review before upgrading")
+            defaults = data.get("moc_defaults", {})
+            if (not isinstance(defaults, dict) or any(k not in {"kind", "importance"} for k in defaults)
+                    or any(not isinstance(v, str) or not v.strip() for v in defaults.values())):
+                raise ValueError("moc_defaults supports only nonempty kind/importance strings")
             by_path = {p.path: p for p in pages}
+            for path in (ENTRY, LOG_INDEX, *(item[0] for item in CATALOGS.values())):
+                page = by_path.get(path)
+                if page is None:
+                    if path in {ENTRY, LOG_INDEX}:
+                        errors.append(f"{path.as_posix()}: required navigation page missing")
+                    continue
+                if page.fields.get("type") != "moc" or page.fields.get("status") != "active":
+                    errors.append(f"{page.rel}: navigation must be an active MOC page")
+                text = page.original.decode("utf-8")
+                if text.count(AUTO_START) != 1 or text.count(AUTO_END) != 1 or text.index(AUTO_START) > text.index(AUTO_END):
+                    errors.append(f"{page.rel}: invalid auto region; preserve manual content and repair markers")
             for title in STATE_TITLES[data["mode"]]:
                 path = Path("当前状态") / f"{title}.md"
                 if path not in by_path or by_path[path].fields.get("type") != "state":
@@ -399,19 +449,26 @@ def inspect(project: Path, memory: Path, pages: list[Page], today: date, stale_d
         agents = override if override.exists() and read_text(override).lstrip("\ufeff").strip() else project / "AGENTS.md"
         rel = memory.relative_to(project).as_posix()
         text = read_text(agents) if agents.exists() else ""
-        if f"{rel}/AGENTS.md" not in text or f"{rel}/入口.md" not in text:
+        if not has_memory_hook(text, rel):
             warnings.append("effective root instructions lack memory hook; verify session discovery")
     return sorted(set(errors)), sorted(set(warnings))
 
 
-def make_page(page_type, status, topic, title, body, today):
+def make_page(page_type, status, topic, title, body, today, *, extra_fields=None):
+    extra = "".join(f"{key}: {json.dumps(value, ensure_ascii=False)}\n" for key, value in (extra_fields or {}).items())
     return (f"---\ntype: {page_type}\nstatus: {status}\nupdated: {today.isoformat()}\n"
-            f"topic: {topic}\nsources: []\n---\n\n# {title}\n\n{body.rstrip()}\n")
+            f"topic: {topic}\n{extra}sources: []\n---\n\n# {title}\n\n{body.rstrip()}\n")
 
 
 def wiki(page: Page):
     title = page.title.replace("|", "\\|").replace("[", "").replace("]", "")
     return f"[[{page.rel}|{title}]]"
+
+
+def log_table_link(page: Page):
+    title = page.title.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]").replace("|", "\\|")
+    relative = Path(os.path.relpath(page.path, LOG_INDEX.parent)).as_posix()
+    return f"[{title}]({quote(relative, safe='/')})"
 
 
 def index_contents(pages: list[Page]):
@@ -441,7 +498,7 @@ def index_contents(pages: list[Page]):
     selected = sorted((p for p in pages if p.fields.get("type") == "log"), key=lambda p: (str(p.fields.get("updated", "")), p.rel), reverse=True)
     for p in selected:
         cells = [str(p.fields.get(k, "未记录")).replace("|", "\\|") for k in ("updated", "kind", "task_status")]
-        logs.append("| " + " | ".join(cells + [wiki(p)]) + " |")
+        logs.append("| " + " | ".join(cells + [log_table_link(p)]) + " |")
     if not selected:
         logs.append("| - | - | - | 暂无记录 |")
     return {ENTRY: "\n".join(entry).rstrip(), LOG_INDEX: "\n".join(logs), **catalogs}
@@ -484,11 +541,12 @@ def initialize(project: Path, memory: Path, mode: str, today: date):
     safe_write_target(agents, project)
     previous = agents.read_bytes() if agents.exists() else b""
     try:
-        previous.decode("utf-8")
+        instruction_text = previous.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ValueError("root instructions are not UTF-8; preserve them and adapt encoding before init") from exc
     if b"wiki-memory:start" in previous or b"wiki-memory:end" in previous:
         raise ValueError("existing memory hook found; inspect before changing it")
+    refuse_competing_memory(project, memory, instruction_text)
     protocol = Path(__file__).resolve().parents[1] / "assets/protocol.md"
     if not protocol.is_file():
         raise ValueError("init must run from the Skill package, which contains assets/protocol.md")
@@ -690,13 +748,15 @@ def main(argv=None):
             errors, warnings = inspect(project, memory, pages, args.date, args.stale_days)
             print(json.dumps({"pages": len(pages), "errors": errors, "warnings": warnings}, ensure_ascii=False, indent=2))
             return 1 if errors else 0
-        errors, _ = inspect(project, memory, pages, args.date, args.stale_days, metadata_only=True)
+        config = memory / ".memory.json"
+        config_snapshot = observed_bytes(config)
+        errors, _ = inspect(project, memory, pages, args.date, args.stale_days, metadata_only=True, config_bytes=config_snapshot)
         if errors:
             raise ValueError("fix metadata/decision relationships before indexing: " + "; ".join(errors))
         snapshots = {memory / p.path: p.original for p in pages}
-        config = memory / ".memory.json"
-        if config.exists():
-            snapshots[config] = config.read_bytes()
+        snapshots[config] = config_snapshot
+        config_data = json.loads(config_snapshot.decode("utf-8-sig")) if config_snapshot is not None else {}
+        moc_defaults = config_data.get("moc_defaults", {})
         plan = {}
         for path, generated in index_contents(pages).items():
             target = memory / path
@@ -707,7 +767,7 @@ def main(argv=None):
                     raise ValueError(f"{path}: required navigation page missing; migrate manually")
                 snapshots[target] = None
                 text = make_page("moc", "active", f"catalog-{path.parent.as_posix()}", path.stem,
-                                 f"{AUTO_START}\n\n{AUTO_END}\n", args.date)
+                                 f"{AUTO_START}\n\n{AUTO_END}\n", args.date, extra_fields=moc_defaults)
             else:
                 text = previous.decode("utf-8")
             updated = refresh_index(text, generated, path, args.date).encode("utf-8")
