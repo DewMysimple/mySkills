@@ -3,7 +3,7 @@ type: knowledge
 status: active
 kind: architecture
 importance: high
-updated: 2026-09-07
+updated: 2026-10-07
 topic: decisions-index
 source_logs:
   - "[[日志/2026-09-07-精简视频转录技能并建立工程记忆]]"
@@ -24,3 +24,6 @@ supersedes: null
 ## 当前决策
 
 - [[决策/ADR-001-按需加载技能复杂流程|ADR-001：按需加载技能复杂流程]]
+- [[决策/ADR-002-每轮修改完成后提交推送|ADR-002：每轮修改完成后提交推送]]
+
+完整状态目录见 [[决策/MOC_决策|决策 MOC]]。

@@ -3,7 +3,7 @@ type: knowledge
 status: active
 kind: process
 importance: high
-updated: 2026-09-07
+updated: 2026-10-07
 topic: work-log
 source_logs:
   - "[[日志/2026-09-07-精简视频转录技能并建立工程记忆]]"
@@ -24,4 +24,4 @@ supersedes: null
 
 ## 索引
 
-日志索引由 python wiki_memory/工具/memory_lint.py index 生成，写入 [[日志/MOC_工作日志|工作日志 MOC]]。
+日志索引由 `python -X utf8 wiki_memory/工具/memory.py index --project . --apply` 刷新，写入 [[日志/MOC_工作日志|工作日志 MOC]] 的自动区。旧 `memory_lint.py` 保留作历史工具，不再用其 index 覆盖当前索引。

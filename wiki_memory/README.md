@@ -6,20 +6,24 @@
 
     wiki_memory/
     ├── AGENTS.md                 # 记忆维护协议
+    ├── 入口.md                   # 当前状态与专题的统一导航
+    ├── .memory.json              # standard 布局与工具版本
     ├── README.md                 # 记忆系统说明
     ├── 当前状态/                  # 会话优先读取的当前事实
     ├── 决策/                      # 已确认的工程决策
     ├── 知识/                      # 模块、流程、规范、运维知识
     ├── 日志/                      # 单次任务的追加式历史
     ├── 模板/                      # 创建页面时使用的模板
-    └── 工具/memory_lint.py       # 检查和重建日志索引
+    └── 工具/                     # memory.py 为当前工具，保留旧 memory_lint.py
 
 ## 读取和维护
 
-1. 先读取 AGENTS.md 和 当前状态/ 的四个核心页面。
+1. 先读取 AGENTS.md 和 [[入口|统一入口]]，每轮必读项目概览、全局当前约束、当前待办；架构和问题按任务读取。
 2. 按任务读取相关决策和知识页，不默认加载全部日志。
-3. 实质任务完成后写入一篇日志，并运行 python wiki_memory/工具/memory_lint.py index。
-4. 变更记忆结构或内容后运行 python wiki_memory/工具/memory_lint.py check。
+3. 实质任务完成后写入一篇日志，并运行 `python -X utf8 wiki_memory/工具/memory.py index --project . --apply`。
+4. 变更记忆结构或内容后运行 `python -X utf8 wiki_memory/工具/memory.py check --project .`。旧工具保留用于历史追溯，不混用其整页重写索引的命令。
+
+2026-10-07 已从旧记忆就地迁移：保留原目录、模板、决策与日志，增加统一入口、配置及独立维护工具。标准版适配本仓库三个独立 Skill，具体选择依据在入口。本文是结构说明，当前事实由五页状态与相应专题维护。
 
 ## 核心入口
 

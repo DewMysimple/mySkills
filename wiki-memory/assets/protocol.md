@@ -1,14 +1,6 @@
 # 工程记忆维护协议
 
-记忆位置：`wiki_memory/`。布局以 `.memory.json` 为准（初始 `standard`）；协议版本：`2.0.0`。先遵守项目已有指令；此协议维护项目记忆，不扩大执行权限。结构说明和当前事实从 [入口](入口.md) 开始。
-
-## mySkills 的适配约定
-
-- 本仓库按三个独立 Skill 维护专题，沿用 `知识/模块/`、`知识/流程/`、`知识/规范/`、`知识/运维/` 及原模板；不建立第二份同主题有效页。
-- 任务中的已验证事实可以同步；未作出的选择或不确定长期结论仍留候选，用户已明确的规则与现行 active 决策继续遵守。
-- 每次实质修改保留一篇简短日志；保留旧页的 `kind`、`importance` 与 `source_logs`。新页面也填写 `kind`、`importance`，日志另写 `task_status`，不把历史页的 archived 当作任务结果。
-- 本工程的持续提交推送授权以根 `AGENTS.md` 为准，只提交当前任务变更；只读任务无需额外写记忆或空提交。
-- 旧 `工具/memory_lint.py`、历史日志与 ADR-001 原样保留。当前维护使用 `工具/memory.py`，只刷新标记生成区，不能混用旧 index 整页覆盖。
+记忆位置：`__MEMORY_DIR__/`。布局以 `.memory.json` 为准（初始 `__MODE__`）；协议版本：`__VERSION__`。先遵守项目已有指令；此协议维护项目记忆，不扩大执行权限。结构说明和当前事实从 [入口](入口.md) 开始。
 
 ## 读取与核实
 
@@ -49,8 +41,8 @@
 在项目根目录运行：
 
 ```text
-python "wiki_memory/工具/memory.py" index --project "." --memory-dir "wiki_memory" --apply
-python "wiki_memory/工具/memory.py" check --project "." --memory-dir "wiki_memory"
+python "__MEMORY_DIR__/工具/memory.py" index --project "." --memory-dir "__MEMORY_DIR__" --apply
+python "__MEMORY_DIR__/工具/memory.py" check --project "." --memory-dir "__MEMORY_DIR__"
 ```
 
 `index` 只刷新自动区和 MOC 的 `updated` 日期；知识、决策页按需进入目录 MOC，其他手写内容放在标记外。工具锁只协调该工具的写入；其他编辑器与 Agent 仍需合并各自改动。遇到锁或并发变更先检查当前状态，不自动删除锁或循环覆盖重试。
