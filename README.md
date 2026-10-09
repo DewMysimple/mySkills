@@ -31,13 +31,13 @@
 
 ### 工程记忆 wiki-memory
 
-[`wiki-memory`](wiki-memory/SKILL.md) 将工程记忆配置到任意 vibecoding 项目中：小项目默认一页当前状态，多模块项目使用标准分层；已验证事实随任务同步，未决选型保留为候选。支持记忆检索、交接、体检和保留历史的压缩。
+[`wiki-memory`](wiki-memory/SKILL.md) 在工程根目录的 `wiki_memory/` 配置可交接记忆：未指定模式时小项目默认一页当前状态；指定 `standard` 时完成概览、架构、约束、待办和问题五页的实质内容，保存证据与未核实项。已验证事实随任务同步，未决选型保留为候选。支持检索、交接、体检和保留历史的压缩。
 
 ```text
-使用 $wiki-memory 为当前项目配置工程记忆，根据项目规模选择模式，并保留已有 AGENTS.md 和项目文档。
+使用 $wiki-memory 在当前工程根目录配置 standard 工程记忆，保留已有 AGENTS.md 和项目文档，并根据实际代码完成五页状态。
 ```
 
-初始化工具默认预览，加 `--apply` 才写入；拒绝覆盖已有记忆，接入时只给根目录生效的 Agent 指令追加入口。项目内保存独立的维护工具，只需 Python 3.10+，无第三方运行依赖。原始 `wiki_memory` 资料无需改动或随 Skill 复制。
+初始化工具默认预览，加 `--apply` 才写入；拒绝覆盖已有记忆。`wiki_memory/README.md` 是唯一导航与使用说明，`wiki_memory/AGENTS.md` 保存维护协议，不另建 `入口.md`；中文专题名称保留。已有子目录记忆和旧导航需要显式迁移，内容与历史保留；旧布局可只读检查，不等于符合新规范。项目内保存独立的维护工具，只需 Python 3.10+，无第三方运行依赖。单独更新 Skill 不会自动迁移其他项目或复制本仓库的记忆资料。
 
 ### 课堂转录 video-transcript-polisher
 
@@ -57,7 +57,7 @@ mySkills/
 ├── README.md
 ├── README.en.md
 ├── wiki_memory/                  # 本仓库的工程记忆，不是 Skill
-│   ├── 入口.md
+│   ├── README.md                # 导航与使用说明
 │   ├── AGENTS.md
 │   ├── 当前状态/                 # 五页全局状态
 │   ├── 知识/                     # 按 Skill 检索
@@ -91,7 +91,7 @@ mySkills/
 
 ## 仓库工程记忆
 
-本仓库采用标准版工程记忆，从 [wiki_memory/入口.md](wiki_memory/入口.md) 开始。每轮任务读取项目概览、当前约束和当前待办，再按所维护的 Skill 定位知识页；架构、问题、决策和历史按需读取。
+本仓库采用标准版工程记忆，从 [wiki_memory/README.md](wiki_memory/README.md) 开始，并遵守 [记忆维护协议](wiki_memory/AGENTS.md)。每轮任务读取项目概览、当前约束和当前待办，再按所维护的 Skill 定位知识页；架构、问题、决策和历史按需读取。
 
 `wiki-memory/` 是可复用的能力包，`wiki_memory/` 保存本仓库的事实和交接信息，两者独立。完成有文件修改的任务时，按 [AGENTS.md](AGENTS.md) 同步记忆、验证、提交并推送。
 
@@ -100,6 +100,7 @@ mySkills/
 ```text
 python -X utf8 "wiki_memory/工具/memory.py" index --project "." --apply
 python -X utf8 "wiki_memory/工具/memory.py" check --project "."
+python -X utf8 "wiki_memory/工具/memory.py" check --project "." --require-ready
 ```
 
 ## 新增 Skill

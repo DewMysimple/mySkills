@@ -29,9 +29,10 @@ REQUIRED = {"type", "status", "updated", "topic"}
 TYPES = {"state", "decision", "knowledge", "log", "moc"}
 STATUSES = {"active", "proposed", "deprecated", "superseded", "archived"}
 KINDS = {"feature", "ui", "bug", "discussion", "test", "maintenance"}
-ENTRY = Path("入口.md")
+ENTRY = Path("README.md")
+LEGACY_ENTRY = Path("入口.md")
 LOG_INDEX = Path("日志/MOC_工作日志.md")
-VERSION = "2.1.0"
+VERSION = "3.0.0"
 CATALOGS = {
     "state": (Path("当前状态/MOC_状态.md"), "历史状态目录"),
     "decision": (Path("决策/MOC_决策.md"), "工程决策目录"),
@@ -40,6 +41,38 @@ CATALOGS = {
 STATE_TITLES = {
     "lite": ["当前状态"],
     "standard": ["项目概览", "系统架构", "当前约束", "当前待办", "已知问题"],
+}
+STATE_SECTIONS = {
+    "当前状态": ["项目目标与阶段", "关键入口与运行命令", "约束与已确认选择", "当前进度与已知问题", "恢复位置与下一步", "证据与未核实项"],
+    "项目概览": ["项目目标与阶段", "核心入口", "工作区背景", "证据与未核实项"],
+    "系统架构": ["模块职责与边界", "数据流与依赖", "运行与部署", "证据与未核实项"],
+    "当前约束": ["用户要求与技术约束", "兼容性与操作边界", "证据与未核实项"],
+    "当前待办": ["进行中", "下一步", "阻塞与恢复位置", "证据与未核实项"],
+    "已知问题": ["未解决问题与影响", "复现与临时处理", "证据与未核实项"],
+}
+STATE_TOPICS = {
+    "当前状态": "project-state", "项目概览": "project-overview", "系统架构": "system-architecture",
+    "当前约束": "project-constraints", "当前待办": "current-todos", "已知问题": "known-issues",
+}
+STATE_PROMPTS = {
+    "项目目标与阶段": "待核实：项目要解决的问题、当前阶段及完成边界；区分需求与已实现行为。",
+    "核心入口": "待核实：源码、配置、启动命令和项目规则的实际入口；命令未执行时明确说明。",
+    "工作区背景": "待核实：当前分支、revision、未提交改动及其归属；历史检查不能代表当前工作区。",
+    "模块职责与边界": "待核实：实际模块入口、职责和接口边界；标明设计与实现差异。",
+    "数据流与依赖": "待核实：实际调用或数据流、内部依赖和外部依赖；就近引用代码或配置。",
+    "运行与部署": "待核实：运行环境、配置和部署方式；区分配置中的命令与实际运行结果。",
+    "用户要求与技术约束": "待核实：用户明确要求、现行有效选择与技术限制，注明提出者和依据。",
+    "兼容性与操作边界": "待核实：兼容目标、现有工作区保护和操作授权范围。",
+    "进行中": "待核实：当前正在推进的焦点及实际完成程度；已完成事项留在日志。",
+    "下一步": "待核实：可执行的下一步与验收条件；完整 backlog 链接原计划。",
+    "阻塞与恢复位置": "待核实：具体阻塞、恢复文件或命令与接续条件；没有阻塞也说明核实范围。",
+    "未解决问题与影响": "待核实：尚未解决的问题、影响范围和已观察证据；未知风险与已复现问题分开。",
+    "复现与临时处理": "待核实：复现步骤、实际结果、环境和可用的临时处理；未复现则明确说明。",
+    "关键入口与运行命令": "待核实：源码、配置及实际运行命令；未执行的命令不能记为验证结果。",
+    "约束与已确认选择": "待核实：明确用户要求、现行决策及授权边界，注明依据。",
+    "当前进度与已知问题": "待核实：已实现行为、进行中的焦点和具体未解决问题。",
+    "恢复位置与下一步": "待核实：接续文件、命令、阻塞条件和可执行下一步。",
+    "证据与未核实项": "待核实：列出事实来源与核实日期、环境、revision、未提交改动背景、实际验证结果及未验证范围；填写 sources/source_logs 后逐项核实。",
 }
 _UNREAD = object()
 
@@ -181,13 +214,13 @@ def locations(project_arg: str, memory_arg: str):
 def page_paths(memory: Path) -> list[Path]:
     if not memory.is_dir():
         raise ValueError(f"memory directory does not exist: {memory}")
-    paths = list(memory.glob("*.md"))
+    paths = [p for p in memory.iterdir() if p.is_file() and p.suffix.lower() == ".md"]
     for folder in sorted(MANAGED):
         base = memory / folder
         if base.is_symlink():
             raise ValueError(f"refusing symlinked memory section: {base}")
         if base.is_dir():
-            paths.extend(base.rglob("*.md"))
+            paths.extend(p for p in base.rglob("*") if p.is_file() and p.suffix.lower() == ".md")
     for path in sorted(set(paths)):
         if not within(path, memory):
             raise ValueError(f"memory page escapes memory directory: {path}")
@@ -223,11 +256,11 @@ def refuse_competing_memory(project: Path, memory: Path, instructions: str):
             raise ValueError(f"existing memory found at {rel}; inspect/migrate it instead of initializing another location")
 
 
-def has_memory_hook(text: str, relative: str):
+def has_memory_hook(text: str, relative: str, entry: Path = ENTRY):
     normalized = text.replace("\\", "/")
     flags = re.IGNORECASE if os.name == "nt" else 0
     return all(re.search(r"(?<![\w./-])(?:\./)?" + re.escape(relative + "/" + name) + r"(?![\w.-])", normalized, flags)
-               for name in ("AGENTS.md", "入口.md"))
+               for name in ("AGENTS.md", entry.as_posix()))
 
 
 def resolve_target(kind, raw, source: Page, project: Path, memory: Path, pages: list[Page], require_exists=True):
@@ -244,8 +277,8 @@ def resolve_target(kind, raw, source: Page, project: Path, memory: Path, pages: 
     if kind == "wiki":
         rel = Path(target)
         path = memory / rel
-        candidates = {rel.name, rel.name + ".md"} if rel.suffix != ".md" else {rel.name}
-        if not path.exists() and rel.suffix != ".md":
+        candidates = {rel.name, rel.name + ".md"} if rel.suffix.lower() != ".md" else {rel.name}
+        if not path.exists() and rel.suffix.lower() != ".md":
             path = memory / Path(target + ".md")
         if not path.exists() and "/" not in target:
             matches = [memory / p.path for p in pages if p.path.name in candidates]
@@ -322,7 +355,40 @@ def supersession_errors(project, memory, pages):
     return errors
 
 
-def inspect(project: Path, memory: Path, pages: list[Page], today: date, stale_days: int, metadata_only=False, *, config_bytes=_UNREAD):
+def state_readiness(page: Page, title: str) -> list[str]:
+    """Structural delivery checks; a pass still requires human semantic review."""
+    issues = []
+    if page.fields.get("status") != "active":
+        issues.append(f"{page.rel}: required state is not active; establish project facts before delivery")
+    if not page.fields.get("sources") and not page.fields.get("source_logs"):
+        issues.append(f"{page.rel}: required state has no evidence references")
+    sections, current, content, fence, length = {}, None, [], None, 0
+    for line in page.body.splitlines():
+        marker = re.match(r"^\s*(`{3,}|~{3,})(.*)$", line)
+        if marker:
+            chars, tail = marker.groups()
+            if fence is None:
+                fence, length = chars[0], len(chars)
+            elif chars[0] == fence and len(chars) >= length and not tail.strip():
+                fence = None
+        heading = re.fullmatch(r"##\s+(.+?)\s*", line) if fence is None else None
+        if heading:
+            if current is not None:
+                sections[current] = "\n".join(content).strip()
+            current, content = heading.group(1), []
+        elif current is not None:
+            content.append(line)
+    if current is not None:
+        sections[current] = "\n".join(content).strip()
+    for heading in STATE_SECTIONS[title]:
+        if heading not in sections:
+            issues.append(f"{page.rel}: required section missing: {heading}")
+        elif sections[heading] in {"", "- 待核实。", "- " + STATE_PROMPTS[heading]}:
+            issues.append(f"{page.rel}: required section is still scaffold: {heading}")
+    return issues
+
+
+def inspect(project: Path, memory: Path, pages: list[Page], today: date, stale_days: int, metadata_only=False, *, config_bytes=_UNREAD, require_ready=False):
     errors, warnings, active, numbers = [], [], {}, {}
     if not pages:
         errors.append("memory directory contains no Markdown pages")
@@ -373,7 +439,7 @@ def inspect(project: Path, memory: Path, pages: list[Page], today: date, stale_d
                 path = resolve_target(kind, target, page, project, memory, pages, require_exists=False)
                 if path is not None and not path.exists():
                     historical = page_type == "log" or str(f.get("status", "")) in {"archived", "superseded", "deprecated"}
-                    internal_page = within(path, memory) and path.suffix == ".md"
+                    internal_page = within(path, memory) and path.suffix.lower() == ".md"
                     if historical and not internal_page:
                         warnings.append(f"{page.rel}: historical source no longer exists: {target}; trace its recorded revision")
                         continue
@@ -397,9 +463,10 @@ def inspect(project: Path, memory: Path, pages: list[Page], today: date, stale_d
         if page.fields.get("type") == "log" and page.rel not in graph.get(LOG_INDEX.as_posix(), set()):
             errors.append(f"{page.rel}: missing from log MOC; refresh index")
         category = CATALOGS.get(str(page.fields.get("type", "")))
-        if ENTRY.as_posix() in graph and category and page.fields.get("type") != "state" and page.rel not in graph.get(category[0].as_posix(), set()):
+        if any(p.as_posix() in graph for p in (ENTRY, LEGACY_ENTRY)) and category and page.fields.get("type") != "state" and page.rel not in graph.get(category[0].as_posix(), set()):
             errors.append(f"{page.rel}: missing from category MOC; refresh index")
-    seed = ENTRY.as_posix() if ENTRY.as_posix() in graph else "README.md"
+    # Older projects may also have a human README beside their actual entry.
+    seed = LEGACY_ENTRY.as_posix() if LEGACY_ENTRY.as_posix() in graph else ENTRY.as_posix()
     reachable, pending = set(), [seed]
     while pending:
         current = pending.pop()
@@ -412,13 +479,25 @@ def inspect(project: Path, memory: Path, pages: list[Page], today: date, stale_d
     config = memory / ".memory.json"
     if config_bytes is _UNREAD:
         config_bytes = observed_bytes(config)
+    entry = ENTRY
+    if memory != project / "wiki_memory":
+        message = "legacy memory location; migrate to <project>/wiki_memory before delivery or index writes"
+        (errors if require_ready else warnings).append(message)
     if config_bytes is not None:
         try:
             if not within(config, memory):
                 raise ValueError("configuration escapes memory directory")
             data = json.loads(config_bytes.decode("utf-8-sig"))
-            if not isinstance(data, dict) or data.get("schema_version") != 1 or data.get("mode") not in {"lite", "standard"}:
+            if not isinstance(data, dict) or data.get("schema_version") not in {1, 2} or data.get("mode") not in {"lite", "standard"}:
                 raise ValueError("unsupported schema_version or mode")
+            if data["schema_version"] == 1:
+                entry = LEGACY_ENTRY
+                message = "legacy schema_version 1; check is read-only compatible, migrate to schema_version 2 and README.md before delivery or index writes"
+                (errors if require_ready else warnings).append(message)
+            elif data.get("navigation") != ENTRY.as_posix():
+                raise ValueError("schema_version 2 requires navigation: README.md")
+            elif any(p.path == LEGACY_ENTRY for p in pages):
+                errors.append("legacy 入口.md remains; merge its navigation into README.md and repair references before indexing")
             if data.get("tool_version") not in {None, VERSION}:
                 warnings.append(f"project tool version {data.get('tool_version')} differs from running version {VERSION}; review before upgrading")
             defaults = data.get("moc_defaults", {})
@@ -426,10 +505,10 @@ def inspect(project: Path, memory: Path, pages: list[Page], today: date, stale_d
                     or any(not isinstance(v, str) or not v.strip() for v in defaults.values())):
                 raise ValueError("moc_defaults supports only nonempty kind/importance strings")
             by_path = {p.path: p for p in pages}
-            for path in (ENTRY, LOG_INDEX, *(item[0] for item in CATALOGS.values())):
+            for path in (entry, LOG_INDEX, *(item[0] for item in CATALOGS.values())):
                 page = by_path.get(path)
                 if page is None:
-                    if path in {ENTRY, LOG_INDEX}:
+                    if path in {entry, LOG_INDEX}:
                         errors.append(f"{path.as_posix()}: required navigation page missing")
                     continue
                 if page.fields.get("type") != "moc" or page.fields.get("status") != "active":
@@ -443,14 +522,18 @@ def inspect(project: Path, memory: Path, pages: list[Page], today: date, stale_d
                     errors.append(f"{path.as_posix()}: required state page missing for {data['mode']} mode")
                 elif str(by_path[path].fields.get("status", "")) not in {"active", "proposed"}:
                     errors.append(f"{path.as_posix()}: required state page must be current (active/proposed)")
+                if not metadata_only and data["schema_version"] == 2 and path in by_path:
+                    (errors if require_ready else warnings).extend(state_readiness(by_path[path], title))
         except (ValueError, TypeError) as exc:
             errors.append(f".memory.json: {exc}")
         override = project / "AGENTS.override.md"
         agents = override if override.exists() and read_text(override).lstrip("\ufeff").strip() else project / "AGENTS.md"
         rel = memory.relative_to(project).as_posix()
         text = read_text(agents) if agents.exists() else ""
-        if not has_memory_hook(text, rel):
-            warnings.append("effective root instructions lack memory hook; verify session discovery")
+        if not has_memory_hook(text, rel, entry):
+            (errors if require_ready else warnings).append("effective root instructions lack memory hook; verify session discovery")
+    elif require_ready:
+        errors.append("configuration missing; --require-ready requires schema_version 2 and README.md navigation")
     return sorted(set(errors)), sorted(set(warnings))
 
 
@@ -462,7 +545,9 @@ def make_page(page_type, status, topic, title, body, today, *, extra_fields=None
 
 def wiki(page: Page):
     title = page.title.replace("|", "\\|").replace("[", "").replace("]", "")
-    return f"[[{page.rel}|{title}]]"
+    # Escape syntax characters once, while keeping Chinese names readable.
+    target = "".join(quote(char, safe="") if char in "%#?[]|" else char for char in page.rel)
+    return f"[[{target}|{title}]]"
 
 
 def log_table_link(page: Page):
@@ -534,6 +619,8 @@ def refresh_index(text: str, generated: str, path: Path, today: date):
 
 
 def initialize(project: Path, memory: Path, mode: str, today: date):
+    if memory != project / "wiki_memory":
+        raise ValueError("new memory must be <project>/wiki_memory; nested/custom memory-dir is only accepted by read-only check for migration")
     if memory.exists():
         raise ValueError("memory directory already exists; inspect/migrate it without init")
     override = project / "AGENTS.override.md"
@@ -554,33 +641,23 @@ def initialize(project: Path, memory: Path, mode: str, today: date):
     content = read_text(protocol).replace("__MEMORY_DIR__", rel).replace("__MODE__", mode).replace("__VERSION__", VERSION)
     plan = {memory / "AGENTS.md": content.encode("utf-8")}
     summary = "> 初始化结构，尚未核实项目事实；填写证据后改为 active。\n\n"
-    if mode == "lite":
-        states = [("当前状态", "project-state", ["项目目标与阶段", "关键入口与运行命令", "约束与已确认选择", "当前进度与已知问题", "恢复位置与下一步", "证据与未核实项"])]
-    else:
-        states = [
-            ("项目概览", "project-overview", ["项目目标与阶段", "核心入口", "证据与未核实项"]),
-            ("系统架构", "system-architecture", ["模块职责与边界", "数据流与依赖", "运行与部署", "证据与未核实项"]),
-            ("当前约束", "project-constraints", ["用户要求与技术约束", "兼容性与操作边界", "证据与未核实项"]),
-            ("当前待办", "current-todos", ["进行中", "下一步", "阻塞与恢复位置", "证据与未核实项"]),
-            ("已知问题", "known-issues", ["未解决问题与影响", "复现与临时处理", "证据与未核实项"]),
-        ]
-    for title, topic, sections in states:
-        body = summary + "\n\n".join(f"## {section}\n\n- 待核实。" for section in sections)
-        plan[memory / "当前状态" / f"{title}.md"] = make_page("state", "proposed", topic, title, body, today).encode("utf-8")
+    for title in STATE_TITLES[mode]:
+        body = summary + "\n\n".join(f"## {section}\n\n- {STATE_PROMPTS[section]}" for section in STATE_SECTIONS[title])
+        plan[memory / "当前状态" / f"{title}.md"] = make_page("state", "proposed", STATE_TOPICS[title], title, body, today).encode("utf-8")
     entry_body = (f"初始布局：`{mode}`（当前布局以 `.memory.json` 为准）。先读当前状态，按任务定位决策、知识与历史。\n\n"
                   "- [记忆维护协议](AGENTS.md)\n- [工作日志 MOC](日志/MOC_工作日志.md)\n\n"
                   f"{AUTO_START}\n\n{AUTO_END}\n")
-    plan[memory / ENTRY] = make_page("moc", "active", "memory-entry", "工程记忆入口", entry_body, today).encode("utf-8")
+    plan[memory / ENTRY] = make_page("moc", "active", "memory-entry", "工程记忆导航", entry_body, today).encode("utf-8")
     plan[memory / LOG_INDEX] = make_page("moc", "active", "work-log-index", "工作日志 MOC", f"{AUTO_START}\n\n{AUTO_END}\n", today).encode("utf-8")
     pages = [parse_page(p.relative_to(memory), data.decode("utf-8")) for p, data in plan.items() if p.suffix == ".md"]
     for path, generated in index_contents(pages).items():
         target = memory / path
         plan[target] = replace_auto(plan[target].decode("utf-8"), generated, path).encode("utf-8")
-    plan[memory / ".memory.json"] = (json.dumps({"schema_version": 1, "mode": mode, "tool_version": VERSION}, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    plan[memory / ".memory.json"] = (json.dumps({"schema_version": 2, "mode": mode, "tool_version": VERSION, "navigation": ENTRY.as_posix()}, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     plan[memory / "工具/memory.py"] = Path(__file__).read_bytes()
     newline = "\r\n" if b"\r\n" in previous else "\n"
     block = (f"{HOOK_START}\n## 工程记忆\n\n"
-             f"本项目使用 `{rel}/`。开始任务前读取 `{rel}/AGENTS.md` 和 `{rel}/入口.md`，按协议读取当前状态与全局约束，再定位相关决策和模块知识。\n"
+             f"本项目使用工程根目录下的 `{rel}/`。开始任务前读取 `{rel}/AGENTS.md` 和 `{rel}/README.md`，按协议读取当前状态与全局约束，再定位相关决策和模块知识。\n"
              "在已授权开发任务完成或中断时，按协议同步有证据的状态、验证和恢复下一步；只读任务遵守只读范围。\n"
              f"{HOOK_END}\n").replace("\n", newline).encode("utf-8")
     separator = (newline * 2).encode("utf-8") if previous else b""
@@ -647,7 +724,7 @@ def apply_plan(plan: dict[Path, bytes], project: Path, apply: bool, append_targe
                 baseline[path] = None
         elif path not in baseline:
             baseline[path] = observed_bytes(path)
-    manifest = {p for p, original in baseline.items() if original is not None and p.suffix == ".md" and page_root and within(p, page_root)}
+    manifest = {p for p, original in baseline.items() if original is not None and p.suffix.lower() == ".md" and page_root and within(p, page_root)}
 
     def verify():
         for path, original in baseline.items():
@@ -691,7 +768,7 @@ def apply_plan(plan: dict[Path, bytes], project: Path, apply: bool, append_targe
                 atomic_write(path, data, create=old is None)
                 written.append((path, old, data))
                 baseline[path] = data
-                if page_root is not None and path.suffix == ".md" and within(path, page_root):
+                if page_root is not None and path.suffix.lower() == ".md" and within(path, page_root):
                     manifest.add(path)
             verify()
         except BaseException as exc:
@@ -732,10 +809,13 @@ def main(argv=None):
     parser.add_argument("--date", type=date.fromisoformat, default=date.today(), help="local verification date (YYYY-MM-DD)")
     parser.add_argument("--stale-days", type=int, default=90)
     parser.add_argument("--apply", action="store_true", help="write the previewed init/index files")
+    parser.add_argument("--require-ready", action="store_true", help="check only: require populated, active state pages with evidence before configuration delivery")
     args = parser.parse_args(argv)
     try:
         if args.command == "check" and args.apply:
             raise ValueError("check is read-only; --apply is not accepted")
+        if args.require_ready and args.command != "check":
+            raise ValueError("--require-ready is accepted only by read-only check")
         if args.stale_days < 0:
             raise ValueError("stale-days must be nonnegative")
         project, memory = locations(args.project, args.memory_dir)
@@ -745,17 +825,21 @@ def main(argv=None):
             return 0
         pages = load_pages(memory)
         if args.command == "check":
-            errors, warnings = inspect(project, memory, pages, args.date, args.stale_days)
+            errors, warnings = inspect(project, memory, pages, args.date, args.stale_days, require_ready=args.require_ready)
             print(json.dumps({"pages": len(pages), "errors": errors, "warnings": warnings}, ensure_ascii=False, indent=2))
             return 1 if errors else 0
         config = memory / ".memory.json"
         config_snapshot = observed_bytes(config)
+        config_data = json.loads(config_snapshot.decode("utf-8-sig")) if config_snapshot is not None else {}
+        if (memory != project / "wiki_memory" or not isinstance(config_data, dict)
+                or config_data.get("schema_version") != 2 or config_data.get("navigation") != ENTRY.as_posix()
+                or (memory / LEGACY_ENTRY).exists()):
+            raise ValueError("legacy memory cannot be indexed by this version; migrate to <project>/wiki_memory, merge navigation into README.md, repair references and set schema_version 2/navigation README.md first")
         errors, _ = inspect(project, memory, pages, args.date, args.stale_days, metadata_only=True, config_bytes=config_snapshot)
         if errors:
             raise ValueError("fix metadata/decision relationships before indexing: " + "; ".join(errors))
         snapshots = {memory / p.path: p.original for p in pages}
         snapshots[config] = config_snapshot
-        config_data = json.loads(config_snapshot.decode("utf-8-sig")) if config_snapshot is not None else {}
         moc_defaults = config_data.get("moc_defaults", {})
         plan = {}
         for path, generated in index_contents(pages).items():

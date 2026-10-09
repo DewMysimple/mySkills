@@ -1,9 +1,10 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "mode": "standard",
-  "tool_version": "2.1.0",
+  "tool_version": "3.0.0",
   "moc_defaults": {
     "kind": "process",
     "importance": "high"
-  }
+  },
+  "navigation": "README.md"
 }

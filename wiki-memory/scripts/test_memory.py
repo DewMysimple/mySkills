@@ -52,6 +52,35 @@ class MemoryTests(unittest.TestCase):
         self.assertNotEqual(code, 2, error)
         return code, json.loads(output)
 
+    def legacy_layout(self, rel="wiki_memory"):
+        """Build an old layout from a temporary fixture, without calling old code."""
+        self.init()
+        (self.root / memory.ENTRY).rename(self.root / memory.LEGACY_ENTRY)
+        protocol = self.root / "AGENTS.md"
+        protocol.write_text(memory.read_text(protocol).replace("README.md", "入口.md"), encoding="utf-8")
+        data = json.loads(memory.read_text(self.root / ".memory.json"))
+        data.update(schema_version=1, tool_version="2.1.0")
+        data.pop("navigation")
+        (self.root / ".memory.json").write_text(json.dumps(data), encoding="utf-8")
+        target = self.project / rel
+        if target != self.root:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            self.root.rename(target)
+        agents = self.project / "AGENTS.md"
+        agents.write_text(memory.read_text(agents).replace("wiki_memory/AGENTS.md", rel + "/AGENTS.md")
+                          .replace("wiki_memory/README.md", rel + "/入口.md"), encoding="utf-8")
+        return target
+
+    def populate_states(self, mode="lite"):
+        for title in memory.STATE_TITLES[mode]:
+            path = self.root / "当前状态" / (title + ".md")
+            text = memory.read_text(path).replace("status: proposed", "status: active")
+            text = text.replace("sources: []", 'sources: ["AGENTS.md"]')
+            text = text.replace("> 初始化结构，尚未核实项目事实；填写证据后改为 active。", "临时测试项目的已核实状态。")
+            for heading in memory.STATE_SECTIONS[title]:
+                text = text.replace("- " + memory.STATE_PROMPTS[heading], "- 已核实的临时项目事实；验证范围仅此测试项目。")
+            path.write_text(text, encoding="utf-8")
+
     def test_preview_is_read_only(self):
         (self.project / "AGENTS.md").write_bytes(b"User rules\r\n")
         before = self.snapshot()
@@ -65,7 +94,7 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(len(list((self.root / "当前状态").glob("*.md"))), 1)
         self.assertFalse((self.root / "知识").exists())
         self.assertFalse((self.root / "决策").exists())
-        result = subprocess.run([sys.executable, str(self.root / "工具/memory.py"), "check", "--project", str(self.project), "--date", str(self.today)], capture_output=True, text=True, encoding="utf-8")
+        result = subprocess.run([sys.executable, "-B", str(self.root / "工具/memory.py"), "check", "--project", str(self.project), "--date", str(self.today)], capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["errors"], [])
 
@@ -114,11 +143,153 @@ class MemoryTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertEqual(before, self.snapshot())
 
-    def test_custom_nested_memory_location(self):
-        self.init("--memory-dir", "docs/工程 记忆")
+    def test_new_memory_must_live_at_project_root(self):
+        for rel in ("docs/wiki_memory", "docs/工程 记忆", "another-memory"):
+            for apply in ((), ("--apply",)):
+                with self.subTest(rel=rel, apply=apply):
+                    before = self.snapshot()
+                    code, _, error = self.run_cli("init", "--memory-dir", rel, *apply)
+                    self.assertEqual(code, 2)
+                    self.assertIn("must be <project>/wiki_memory", error)
+                    self.assertEqual(before, self.snapshot())
+
+    def test_new_navigation_uses_only_readme_and_updated_root_hook(self):
+        self.init()
+        self.assertTrue((self.root / "README.md").is_file())
+        self.assertFalse((self.root / "入口.md").exists())
+        data = json.loads(memory.read_text(self.root / ".memory.json"))
+        self.assertEqual(data["schema_version"], 2)
+        self.assertEqual(data["navigation"], "README.md")
+        agents = memory.read_text(self.project / "AGENTS.md")
+        self.assertIn("wiki_memory/README.md", agents)
+        self.assertNotIn("wiki_memory/入口.md", agents)
+
+    def test_legacy_nested_memory_remains_read_only_checkable(self):
+        self.legacy_layout("docs/工程 记忆")
+        before = self.snapshot()
         code, output, error = self.run_cli("check", "--memory-dir", "docs/工程 记忆")
         self.assertEqual(code, 0, error)
-        self.assertFalse(any("root instructions" in x for x in json.loads(output)["warnings"]))
+        report = json.loads(output)
+        self.assertFalse(any("root instructions" in x for x in report["warnings"]))
+        self.assertTrue(any("legacy memory location" in x for x in report["warnings"]))
+        self.assertTrue(any("legacy schema_version 1" in x for x in report["warnings"]))
+        for apply in ((), ("--apply",)):
+            code, _, error = self.run_cli("index", "--memory-dir", "docs/工程 记忆", *apply)
+            self.assertEqual(code, 2)
+            self.assertIn("migrate", error)
+        self.assertEqual(before, self.snapshot())
+
+    def test_legacy_schema_cannot_create_competing_readme(self):
+        self.legacy_layout()
+        before = self.snapshot()
+        self.assertEqual(self.check()[0], 0)
+        self.assertEqual(self.run_cli("check", "--require-ready")[0], 1)
+        self.assertEqual(self.run_cli("index", "--apply")[0], 2)
+        self.assertFalse((self.root / "README.md").exists())
+        self.assertEqual(before, self.snapshot())
+
+    def test_legacy_entry_keeps_priority_over_human_readme(self):
+        target = self.legacy_layout()
+        (target / "README.md").write_text("# 旧版人类说明\n\n具体导航由旧入口提供。\n", encoding="utf-8")
+        code, report = self.check()
+        self.assertEqual(code, 0)
+        self.assertFalse(any("unreachable" in x for x in report["warnings"]))
+
+    def test_schema_two_still_cannot_index_a_nested_location(self):
+        self.init()
+        nested = self.project / "docs/wiki_memory"
+        nested.parent.mkdir()
+        self.root.rename(nested)
+        before = self.snapshot()
+        code, _, error = self.run_cli("index", "--memory-dir", "docs/wiki_memory", "--apply")
+        self.assertEqual(code, 2)
+        self.assertIn("migrate", error)
+        self.assertEqual(before, self.snapshot())
+
+    def test_schema_two_requires_readme_navigation_and_no_legacy_entry(self):
+        self.init()
+        config = self.root / ".memory.json"
+        original = config.read_bytes()
+        data = json.loads(original)
+        data["navigation"] = "入口.md"
+        config.write_text(json.dumps(data), encoding="utf-8")
+        self.assertEqual(self.check()[0], 1)
+        self.assertEqual(self.run_cli("index", "--apply")[0], 2)
+        config.write_bytes(original)
+        (self.root / "入口.md").write_bytes((self.root / "README.md").read_bytes())
+        before = self.snapshot()
+        self.assertTrue(any("legacy 入口.md remains" in x for x in self.check()[1]["errors"]))
+        self.assertEqual(self.run_cli("index", "--apply")[0], 2)
+        self.assertEqual(before, self.snapshot())
+
+    def test_ready_gate_rejects_scaffold_then_accepts_populated_state(self):
+        for mode in ("lite", "standard"):
+            with self.subTest(mode=mode):
+                if self.root.exists():
+                    # Each mode uses its own project; avoid deleting a live tree.
+                    self.project = self.project / "next-project"
+                    self.project.mkdir()
+                    self.root = self.project / "wiki_memory"
+                self.init("--mode", mode)
+                before = self.snapshot()
+                code, output, _ = self.run_cli("check", "--require-ready")
+                self.assertEqual(code, 1)
+                self.assertTrue(any("not active" in x for x in json.loads(output)["errors"]))
+                self.assertEqual(before, self.snapshot())
+                self.populate_states(mode)
+                code, output, error = self.run_cli("check", "--require-ready")
+                self.assertEqual(code, 0, error + output)
+
+    def test_ready_gate_requires_evidence_sections_and_real_content(self):
+        self.init("--mode", "standard")
+        self.populate_states("standard")
+        overview = self.root / "当前状态/项目概览.md"
+        original = memory.read_text(overview).replace("\r\n", "\n")
+        variants = (
+            (original.replace('sources: ["AGENTS.md"]', "sources: []"), "no evidence references"),
+            (original.replace("## 工作区背景", "## 其他说明"), "required section missing"),
+            (original.replace("status: active", "status: proposed"), "not active"),
+            (original.replace("## 核心入口\n\n- 已核实的临时项目事实；验证范围仅此测试项目。", "## 核心入口\n\n- " + memory.STATE_PROMPTS["核心入口"]), "still scaffold"),
+        )
+        for text, message in variants:
+            with self.subTest(message=message):
+                overview.write_text(text, encoding="utf-8")
+                before = self.snapshot()
+                code, output, _ = self.run_cli("check", "--require-ready")
+                self.assertEqual(code, 1)
+                self.assertTrue(any(message in x for x in json.loads(output)["errors"]))
+                self.assertEqual(before, self.snapshot())
+
+    def test_ready_gate_accepts_valid_source_log_evidence(self):
+        self.init()
+        self.populate_states()
+        self.add_page("日志/evidence.md", "log", "archived", sources=["AGENTS.md"])
+        state = self.root / "当前状态/当前状态.md"
+        state.write_text(memory.read_text(state).replace('sources: ["AGENTS.md"]', 'sources: []\nsource_logs: ["日志/evidence.md"]'), encoding="utf-8")
+        self.assertEqual(self.run_cli("index", "--apply")[0], 0)
+        self.assertEqual(self.run_cli("check", "--require-ready")[0], 0)
+
+    def test_ready_gate_is_only_a_check_option(self):
+        self.assertEqual(self.run_cli("init", "--require-ready", "--apply")[0], 2)
+        self.assertFalse(self.root.exists())
+
+    def test_ready_sections_accept_code_content_but_ignore_headings_in_examples(self):
+        self.init()
+        self.populate_states()
+        state = self.root / "当前状态/当前状态.md"
+        original = memory.read_text(state).replace("\r\n", "\n")
+        text = original.replace(
+            "## 关键入口与运行命令\n\n- 已核实的临时项目事实；验证范围仅此测试项目。",
+            "## 关键入口与运行命令\n\n```text\npython -B main.py\n```",
+        )
+        state.write_text(text, encoding="utf-8")
+        self.assertEqual(self.run_cli("check", "--require-ready")[0], 0)
+        # An example heading cannot fill in for a missing real state section.
+        state.write_text(text.replace("## 约束与已确认选择", "## 其他事项") +
+                         "\n```md\n## 约束与已确认选择\n示例约束\n```\n", encoding="utf-8")
+        code, output, _ = self.run_cli("check", "--require-ready")
+        self.assertEqual(code, 1)
+        self.assertTrue(any("required section missing: 约束与已确认选择" in x for x in json.loads(output)["errors"]))
 
     def test_unmarked_legacy_memory_refuses_competing_initialization(self):
         legacy = self.project / "docs/wiki_memory"
@@ -177,14 +348,14 @@ class MemoryTests(unittest.TestCase):
         self.init()
         agents = self.project / "AGENTS.md"
         agents.write_text(memory.read_text(agents).replace("wiki_memory/AGENTS.md", "docs/wiki_memory/AGENTS.md")
-                          .replace("wiki_memory/入口.md", "docs/wiki_memory/入口.md"), encoding="utf-8")
+                          .replace("wiki_memory/README.md", "docs/wiki_memory/README.md"), encoding="utf-8")
         self.assertTrue(any("lack memory hook" in x for x in self.check()[1]["warnings"]))
 
     def test_dot_relative_memory_hook_is_recognized(self):
         self.init()
         agents = self.project / "AGENTS.md"
         agents.write_text(memory.read_text(agents).replace("wiki_memory/AGENTS.md", "./wiki_memory/AGENTS.md")
-                          .replace("wiki_memory/入口.md", "./wiki_memory/入口.md"), encoding="utf-8")
+                          .replace("wiki_memory/README.md", "./wiki_memory/README.md"), encoding="utf-8")
         self.assertFalse(any("lack memory hook" in x for x in self.check()[1]["warnings"]))
 
     def test_unsafe_memory_paths_do_not_write(self):
@@ -502,23 +673,17 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(config.read_bytes(), changed)
         self.assertFalse((self.root / "知识/MOC_知识.md").exists())
 
-    def test_index_detects_config_created_after_validation(self):
+    def test_unconfigured_legacy_memory_cannot_be_indexed(self):
         self.init()
         self.add_page("知识/new.md")
         config = self.root / ".memory.json"
         config.unlink()
-        original_inspect = memory.inspect
-
-        def race(*args, **kwargs):
-            result = original_inspect(*args, **kwargs)
-            config.write_text(json.dumps({"schema_version": 1, "mode": "lite"}), encoding="utf-8")
-            return result
-
-        with mock.patch.object(memory, "inspect", side_effect=race):
-            code, _, error = self.run_cli("index", "--apply")
+        before = self.snapshot()
+        code, _, error = self.run_cli("index", "--apply")
         self.assertEqual(code, 2, error)
-        self.assertIn("file changed after it was read", error)
-        self.assertTrue(config.exists())
+        self.assertIn("migrate", error)
+        self.assertEqual(before, self.snapshot())
+        self.assertFalse(config.exists())
         self.assertFalse((self.root / "知识/MOC_知识.md").exists())
 
     def test_initialization_rolls_back_normal_write_failure(self):
@@ -589,6 +754,38 @@ class MemoryTests(unittest.TestCase):
         self.add_page("知识/config.md", sources=["src/config#prod.py"])
         self.assertEqual(self.run_cli("index", "--apply")[0], 0)
         self.assertEqual(self.check()[1]["errors"], [])
+
+    def test_generated_wiki_paths_encode_hash_and_literal_percent_once(self):
+        self.init()
+        first = self.add_page("知识/配置#生产.md", topic="hash-config")
+        second = self.add_page("知识/配置%20字面.md", topic="percent-config")
+        self.add_page("知识/消费者.md", topic="consumer", body="[[知识/配置%23生产.md]] 与 [[知识/配置%2520字面.md]]。")
+        self.assertEqual(self.run_cli("index", "--apply")[0], 0)
+        catalog = memory.read_text(self.root / memory.CATALOGS["knowledge"][0])
+        self.assertIn("知识/配置%23生产.md", catalog)
+        self.assertIn("知识/配置%2520字面.md", catalog)
+        self.assertNotIn("%E7%9F", catalog)
+        self.assertEqual(self.check()[1]["errors"], [])
+        pages = memory.load_pages(self.root)
+        source = next(p for p in pages if p.path == memory.CATALOGS["knowledge"][0])
+        self.assertEqual(memory.resolve_target("wiki", "知识/配置%23生产.md", source, self.project, self.root, pages), first)
+        self.assertEqual(memory.resolve_target("wiki", "知识/配置%2520字面.md", source, self.project, self.root, pages), second)
+        before = self.snapshot()
+        self.assertEqual(self.run_cli("index", "--apply")[0], 0)
+        self.assertEqual(before, self.snapshot())
+
+    def test_uppercase_markdown_extension_indexes_without_false_concurrency(self):
+        self.init()
+        page = self.add_page("知识/Uppercase.MD", topic="uppercase")
+        log = self.add_page("日志/历史#%20.MD", "log", "archived", topic="uppercase-log")
+        self.assertEqual(self.run_cli("index", "--apply")[0], 0)
+        self.assertEqual(self.check()[1]["errors"], [])
+        catalog = memory.read_text(self.root / memory.CATALOGS["knowledge"][0])
+        self.assertIn("Uppercase.MD", catalog)
+        self.assertTrue(page.exists() and log.exists())
+        before = self.snapshot()
+        self.assertEqual(self.run_cli("index", "--apply")[0], 0)
+        self.assertEqual(before, self.snapshot())
 
     def test_markdown_parentheses_and_dotted_wiki_titles(self):
         self.init()
