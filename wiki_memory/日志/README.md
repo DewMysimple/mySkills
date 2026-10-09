@@ -6,7 +6,7 @@ importance: high
 updated: 2026-10-07
 topic: work-log
 source_logs:
-  - "[[日志/2026-09-07-精简视频转录技能并建立工程记忆]]"
+  - "[[日志/工程维护/2026-09-07-精简视频转录技能并建立工程记忆]]"
 supersedes: null
 ---
 
@@ -16,7 +16,18 @@ supersedes: null
 
 ## 文件命名
 
-使用 YYYY-MM-DD-任务标题.md；同一天标题冲突时追加 -02、-03。
+本仓库采用 standard，使用 `日志/<分类>/YYYY-MM-DD-任务标题.md`；同一天标题冲突时追加 -02、-03。
+
+| kind | 分类目录 |
+| --- | --- |
+| feature | 功能添加 |
+| ui | UI修改 |
+| bug | Bug处理 |
+| discussion | 工程讨论 |
+| test | 测试验证 |
+| maintenance | 工程维护 |
+
+按主要交付物选择一个 kind，目录与字段保持一致。六类目录均保留，空目录用 `.gitkeep` 跟踪；不为分类编造任务记录。lite 项目可直接使用 `日志/YYYY-MM-DD-任务标题.md`。
 
 ## 日志要求
 

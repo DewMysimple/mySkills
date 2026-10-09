@@ -28,11 +28,15 @@ MANAGED = {"当前状态", "决策", "知识", "日志"}
 REQUIRED = {"type", "status", "updated", "topic"}
 TYPES = {"state", "decision", "knowledge", "log", "moc"}
 STATUSES = {"active", "proposed", "deprecated", "superseded", "archived"}
-KINDS = {"feature", "ui", "bug", "discussion", "test", "maintenance"}
+LOG_CATEGORIES = {
+    "feature": "功能添加", "ui": "UI修改", "bug": "Bug处理",
+    "discussion": "工程讨论", "test": "测试验证", "maintenance": "工程维护",
+}
+KINDS = set(LOG_CATEGORIES)
 ENTRY = Path("README.md")
 LEGACY_ENTRY = Path("入口.md")
 LOG_INDEX = Path("日志/MOC_工作日志.md")
-VERSION = "3.0.0"
+VERSION = "3.1.0"
 CATALOGS = {
     "state": (Path("当前状态/MOC_状态.md"), "历史状态目录"),
     "decision": (Path("决策/MOC_决策.md"), "工程决策目录"),
@@ -388,6 +392,35 @@ def state_readiness(page: Page, title: str) -> list[str]:
     return issues
 
 
+def standard_log_issues(memory: Path, pages: list[Page]) -> list[str]:
+    """Standard mode stores every log under its primary kind's directory."""
+    issues = []
+    for folder in LOG_CATEGORIES.values():
+        directory = memory / "日志" / folder
+        if not directory.is_dir() or directory.is_symlink() or not within(directory, memory):
+            issues.append(f"日志/{folder}: required standard log directory missing, symlinked or escaping memory root; explicitly migrate the log layout")
+    for page in pages:
+        if page.fields.get("type") != "log":
+            continue
+        kind = page.fields.get("kind")
+        if not isinstance(kind, str) or kind not in LOG_CATEGORIES:
+            issues.append(f"{page.rel}: standard log requires a valid kind before classification")
+            continue
+        expected = ("日志", LOG_CATEGORIES[kind])
+        if len(page.path.parts) < 3 or page.path.parts[:2] != expected:
+            issues.append(f"{page.rel}: standard log kind {kind} requires 日志/{expected[1]}/; explicitly migrate and repair references")
+    return issues
+
+
+def legacy_log_layout(data: dict) -> bool:
+    """A missing/old version enables read-only compatibility, never delivery."""
+    if data["schema_version"] == 1:
+        return True
+    version = data.get("tool_version")
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", version) if isinstance(version, str) else None
+    return version is None or bool(match and tuple(map(int, match.groups())) < (3, 1, 0))
+
+
 def inspect(project: Path, memory: Path, pages: list[Page], today: date, stale_days: int, metadata_only=False, *, config_bytes=_UNREAD, require_ready=False):
     errors, warnings, active, numbers = [], [], {}, {}
     if not pages:
@@ -500,6 +533,12 @@ def inspect(project: Path, memory: Path, pages: list[Page], today: date, stale_d
                 errors.append("legacy 入口.md remains; merge its navigation into README.md and repair references before indexing")
             if data.get("tool_version") not in {None, VERSION}:
                 warnings.append(f"project tool version {data.get('tool_version')} differs from running version {VERSION}; review before upgrading")
+            if data["mode"] == "standard":
+                issues = standard_log_issues(memory, pages)
+                compatible = not metadata_only and not require_ready and legacy_log_layout(data)
+                (warnings if compatible else errors).extend(issues)
+                if issues and compatible:
+                    warnings.append("legacy standard log layout is read-only compatible; explicitly classify logs and repair references before delivery or index writes")
             defaults = data.get("moc_defaults", {})
             if (not isinstance(defaults, dict) or any(k not in {"kind", "importance"} for k in defaults)
                     or any(not isinstance(v, str) or not v.strip() for v in defaults.values())):
@@ -649,6 +688,9 @@ def initialize(project: Path, memory: Path, mode: str, today: date):
                   f"{AUTO_START}\n\n{AUTO_END}\n")
     plan[memory / ENTRY] = make_page("moc", "active", "memory-entry", "工程记忆导航", entry_body, today).encode("utf-8")
     plan[memory / LOG_INDEX] = make_page("moc", "active", "work-log-index", "工作日志 MOC", f"{AUTO_START}\n\n{AUTO_END}\n", today).encode("utf-8")
+    if mode == "standard":
+        for folder in LOG_CATEGORIES.values():
+            plan[memory / "日志" / folder / ".gitkeep"] = b""
     pages = [parse_page(p.relative_to(memory), data.decode("utf-8")) for p, data in plan.items() if p.suffix == ".md"]
     for path, generated in index_contents(pages).items():
         target = memory / path
@@ -713,7 +755,7 @@ def atomic_write(path: Path, data: bytes, *, create=False):
 
 
 def apply_plan(plan: dict[Path, bytes], project: Path, apply: bool, append_target: Path | None = None,
-               expected: bytes = b"", *, snapshots=None, page_root=None, new_root=None):
+               expected: bytes = b"", *, snapshots=None, page_root=None, new_root=None, required_dirs=()):
     baseline = dict(snapshots or {})
     for path in plan:
         safe_write_target(path, project)
@@ -727,6 +769,10 @@ def apply_plan(plan: dict[Path, bytes], project: Path, apply: bool, append_targe
     manifest = {p for p, original in baseline.items() if original is not None and p.suffix.lower() == ".md" and page_root and within(p, page_root)}
 
     def verify():
+        for directory in required_dirs:
+            safe_write_target(directory, project)
+            if not directory.is_dir() or (page_root is not None and not within(directory, page_root)):
+                raise ValueError(f"required standard log directory changed while generating indexes; inspect and retry: {directory}")
         for path, original in baseline.items():
             safe_write_target(path, project)
             if observed_bytes(path) != original:
@@ -809,7 +855,7 @@ def main(argv=None):
     parser.add_argument("--date", type=date.fromisoformat, default=date.today(), help="local verification date (YYYY-MM-DD)")
     parser.add_argument("--stale-days", type=int, default=90)
     parser.add_argument("--apply", action="store_true", help="write the previewed init/index files")
-    parser.add_argument("--require-ready", action="store_true", help="check only: require populated, active state pages with evidence before configuration delivery")
+    parser.add_argument("--require-ready", action="store_true", help="check only: require populated active states with evidence and the selected mode's log layout")
     args = parser.parse_args(argv)
     try:
         if args.command == "check" and args.apply:
@@ -837,7 +883,7 @@ def main(argv=None):
             raise ValueError("legacy memory cannot be indexed by this version; migrate to <project>/wiki_memory, merge navigation into README.md, repair references and set schema_version 2/navigation README.md first")
         errors, _ = inspect(project, memory, pages, args.date, args.stale_days, metadata_only=True, config_bytes=config_snapshot)
         if errors:
-            raise ValueError("fix metadata/decision relationships before indexing: " + "; ".join(errors))
+            raise ValueError("fix metadata/decision relationships or explicitly migrate the standard log layout before indexing: " + "; ".join(errors))
         snapshots = {memory / p.path: p.original for p in pages}
         snapshots[config] = config_snapshot
         moc_defaults = config_data.get("moc_defaults", {})
@@ -857,7 +903,8 @@ def main(argv=None):
             updated = refresh_index(text, generated, path, args.date).encode("utf-8")
             if updated != previous:
                 plan[target] = updated
-        apply_plan(plan, project, args.apply, snapshots=snapshots, page_root=memory)
+        required_dirs = tuple(memory / "日志" / folder for folder in LOG_CATEGORIES.values()) if config_data.get("mode") == "standard" else ()
+        apply_plan(plan, project, args.apply, snapshots=snapshots, page_root=memory, required_dirs=required_dirs)
         return 0
     except KeyboardInterrupt:
         print("ERROR: interrupted; inspect current files before retrying", file=sys.stderr)

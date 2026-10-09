@@ -6,7 +6,7 @@ importance: medium
 updated: 2026-09-07
 topic: conventions
 source_logs:
-  - "[[日志/2026-09-07-精简视频转录技能并建立工程记忆]]"
+  - "[[日志/工程维护/2026-09-07-精简视频转录技能并建立工程记忆]]"
 supersedes: null
 ---
 

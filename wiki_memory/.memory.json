@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "mode": "standard",
-  "tool_version": "3.0.0",
+  "tool_version": "3.1.0",
   "moc_defaults": {
     "kind": "process",
     "importance": "high"

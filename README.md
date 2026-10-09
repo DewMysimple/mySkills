@@ -31,13 +31,15 @@
 
 ### 工程记忆 wiki-memory
 
-[`wiki-memory`](wiki-memory/SKILL.md) 在工程根目录的 `wiki_memory/` 配置可交接记忆：未指定模式时小项目默认一页当前状态；指定 `standard` 时完成概览、架构、约束、待办和问题五页的实质内容，保存证据与未核实项。已验证事实随任务同步，未决选型保留为候选。支持检索、交接、体检和保留历史的压缩。
+[`wiki-memory`](wiki-memory/SKILL.md) 在工程根目录的 `wiki_memory/` 配置可交接记忆：未指定模式时小项目默认一页当前状态，日志可平铺；指定 `standard` 时完成概览、架构、约束、待办和问题五页的实质内容，并按六类目录保存日志，保留证据与未核实项。已验证事实随任务同步，未决选型保留为候选。支持检索、交接、体检和保留历史的压缩。
 
 ```text
 使用 $wiki-memory 在当前工程根目录配置 standard 工程记忆，保留已有 AGENTS.md 和项目文档，并根据实际代码完成五页状态。
 ```
 
 初始化工具默认预览，加 `--apply` 才写入；拒绝覆盖已有记忆。`wiki_memory/README.md` 是唯一导航与使用说明，`wiki_memory/AGENTS.md` 保存维护协议，不另建 `入口.md`；中文专题名称保留。已有子目录记忆和旧导航需要显式迁移，内容与历史保留；旧布局可只读检查，不等于符合新规范。项目内保存独立的维护工具，只需 Python 3.10+，无第三方运行依赖。单独更新 Skill 不会自动迁移其他项目或复制本仓库的记忆资料。
+
+标准版的真实目录与虚构日志示例见 [日志布局样例](wiki-memory/assets/standard-log-layout/)。[LLM Wiki 理论原文](wiki-memory/references/llm-wiki.md) 随 Skill 保留供按需查阅，来源与工程化边界见 [记忆模型](wiki-memory/references/memory-model.md)。
 
 ### 课堂转录 video-transcript-polisher
 
@@ -80,8 +82,12 @@ mySkills/
 └── wiki-memory/
     ├── SKILL.md
     ├── agents/openai.yaml
-    ├── assets/protocol.md
-    ├── references/memory-model.md
+    ├── assets/
+    │   ├── protocol.md
+    │   └── standard-log-layout/  # 六个实际分类目录及示例日志
+    ├── references/
+    │   ├── memory-model.md
+    │   └── llm-wiki.md           # 可选理论背景原文
     └── scripts/
         ├── memory.py
         └── test_memory.py

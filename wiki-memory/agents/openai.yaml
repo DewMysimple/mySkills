@@ -1,4 +1,4 @@
 interface:
   display_name: "工程记忆 Wiki"
   short_description: "在工程根目录建立可追溯记忆，遵守指定模式并支持换会话继续开发"
-  default_prompt: "使用 $wiki-memory 在当前工程根目录配置或迁移工程记忆，遵守我指定的模式，以 README.md 导航、AGENTS.md 维护协议，并根据实际代码完成有证据的状态内容。"
+  default_prompt: "使用 $wiki-memory 在当前工程根目录配置或迁移工程记忆，遵守我指定的模式，以 README.md 导航、AGENTS.md 维护协议，完成有证据的状态内容，并在 standard 模式按六类管理日志。"

@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -106,6 +107,235 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(report["pages"], 8)
         self.assertEqual(report["errors"], [])
         self.assertTrue(any("no active current state" in x for x in report["warnings"]))
+
+    def test_standard_init_previews_and_creates_trackable_log_directories(self):
+        before = self.snapshot()
+        code, output, error = self.run_cli("init", "--mode", "standard")
+        self.assertEqual(code, 0, error)
+        files = json.loads(output)["files"]
+        for folder in memory.LOG_CATEGORIES.values():
+            self.assertIn(f"wiki_memory/日志/{folder}/.gitkeep", files)
+        self.assertEqual(before, self.snapshot())
+        self.assertFalse(self.root.exists())
+        self.init("--mode", "standard")
+        self.assertEqual(json.loads(memory.read_text(self.root / ".memory.json"))["tool_version"], "3.1.0")
+        for folder in memory.LOG_CATEGORIES.values():
+            self.assertEqual((self.root / "日志" / folder / ".gitkeep").read_bytes(), b"")
+        self.assertEqual(list((self.root / "日志").rglob("MOC*.md")), [self.root / memory.LOG_INDEX])
+
+    def test_standard_empty_log_directories_survive_git_tracking(self):
+        if not shutil.which("git"):
+            self.skipTest("Git unavailable")
+        self.init("--mode", "standard")
+        for args in (("init", "--quiet"), ("add", "--", "wiki_memory/日志")):
+            result = subprocess.run(["git", "-C", str(self.project), *args], capture_output=True, text=True, encoding="utf-8")
+            self.assertEqual(result.returncode, 0, result.stderr)
+        result = subprocess.run(["git", "-C", str(self.project), "ls-files", "-z"], capture_output=True, encoding="utf-8")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        tracked = set(result.stdout.split("\0"))
+        for folder in memory.LOG_CATEGORIES.values():
+            self.assertIn(f"wiki_memory/日志/{folder}/.gitkeep", tracked)
+
+    def test_lite_allows_flat_logs_without_kind_or_category_directories(self):
+        self.init()
+        self.populate_states()
+        log = self.add_page("日志/flat.md", "log", "archived")
+        self.assertEqual(self.run_cli("index", "--apply")[0], 0)
+        self.assertEqual(self.check()[1]["errors"], [])
+        self.assertEqual(self.run_cli("check", "--require-ready")[0], 0)
+        self.assertEqual(set((self.root / "日志").iterdir()), {self.root / memory.LOG_INDEX, log})
+
+    def test_standard_category_logs_feed_one_recursive_moc_and_resolve_links(self):
+        self.init("--mode", "standard")
+        self.populate_states("standard")
+        paths = []
+        for kind, folder in memory.LOG_CATEGORIES.items():
+            paths.append(self.add_page(f"日志/{folder}/2026-10-07-{kind}.md", "log", "archived", topic=f"log-{kind}",
+                                       extra=f"\nkind: {kind}\ntask_status: completed"))
+        nested = self.add_page("日志/功能添加/子任务/配置#%20.MD", "log", "archived", topic="nested-log",
+                               body="[相关功能](../2026-10-07-feature.md)。", extra="\nkind: feature\ntask_status: completed")
+        paths.append(nested)
+        self.assertEqual(self.run_cli("index", "--apply")[0], 0)
+        code, report = self.run_cli("check", "--require-ready")[:2]
+        self.assertEqual(code, 0, report)
+        pages = memory.load_pages(self.root)
+        moc = next(p for p in pages if p.path == memory.LOG_INDEX)
+        resolved = {memory.resolve_target(kind, target, moc, self.project, self.root, pages)
+                    for kind, target in memory.links(moc.body)}
+        self.assertEqual(resolved, set(paths))
+        self.assertIn("%23%2520.MD", moc.body)
+        self.assertEqual(list((self.root / "日志").rglob("MOC*.md")), [self.root / memory.LOG_INDEX])
+        before = self.snapshot()
+        self.assertEqual(self.run_cli("index", "--apply")[0], 0)
+        self.assertEqual(before, self.snapshot())
+
+    def test_standard_missing_category_blocks_checks_and_index_without_repair(self):
+        self.init("--mode", "standard")
+        self.populate_states("standard")
+        directory = self.root / "日志/测试验证"
+        (directory / ".gitkeep").unlink()
+        directory.rmdir()
+        before = self.snapshot()
+        self.assertTrue(any("日志/测试验证" in x and "directory missing" in x for x in self.check()[1]["errors"]))
+        self.assertEqual(self.run_cli("check", "--require-ready")[0], 1)
+        code, _, error = self.run_cli("index", "--apply")
+        self.assertEqual(code, 2, error)
+        self.assertIn("migrate", error)
+        self.assertEqual(before, self.snapshot())
+        self.assertFalse(directory.exists())
+
+    def test_standard_flat_log_cannot_be_indexed_or_pass_delivery(self):
+        self.init("--mode", "standard")
+        self.populate_states("standard")
+        log = self.add_page("日志/flat.md", "log", "archived", extra="\nkind: maintenance")
+        before = self.snapshot()
+        self.assertTrue(any("requires 日志/工程维护/" in x for x in self.check()[1]["errors"]))
+        self.assertEqual(self.run_cli("check", "--require-ready")[0], 1)
+        self.assertEqual(self.run_cli("index", "--apply")[0], 2)
+        self.assertEqual(before, self.snapshot())
+        self.assertTrue(log.exists())
+
+    def test_standard_logs_require_valid_kind_and_matching_directory(self):
+        self.init("--mode", "standard")
+        for kind in (None, "unknown", "bug", ["feature"]):
+            with self.subTest(kind=kind):
+                extra = "" if kind is None else "\nkind: " + json.dumps(kind)
+                log = self.add_page("日志/功能添加/mismatch.md", "log", "archived", extra=extra)
+                errors = self.check()[1]["errors"]
+                phrase = "requires 日志/Bug处理/" if kind == "bug" else "requires a valid kind"
+                self.assertTrue(any(phrase in x for x in errors), errors)
+                before = self.snapshot()
+                self.assertEqual(self.run_cli("index", "--apply")[0], 2)
+                self.assertEqual(before, self.snapshot())
+                log.unlink()
+
+    def test_standard_log_outside_log_section_is_rejected(self):
+        self.init("--mode", "standard")
+        self.add_page("root-log.md", "log", "archived", extra="\nkind: test")
+        self.assertTrue(any("root-log.md" in x and "requires 日志/测试验证/" in x for x in self.check()[1]["errors"]))
+        self.assertEqual(self.run_cli("index", "--apply")[0], 2)
+
+    def test_old_standard_flat_layout_is_read_only_compatible_but_not_deliverable(self):
+        self.init("--mode", "standard")
+        self.populate_states("standard")
+        self.add_page("日志/old.md", "log", "archived", extra="\nkind: maintenance")
+        # Fixture of an already-generated 3.0.0 flat layout, not a migration.
+        pages = memory.load_pages(self.root)
+        for path, generated in memory.index_contents(pages).items():
+            target = self.root / path
+            target.write_text(memory.replace_auto(memory.read_text(target), generated, path), encoding="utf-8")
+        for folder in memory.LOG_CATEGORIES.values():
+            directory = self.root / "日志" / folder
+            (directory / ".gitkeep").unlink()
+            directory.rmdir()
+        config = self.root / ".memory.json"
+        data = json.loads(memory.read_text(config))
+        for version in ("3.0.0", "2.1.0", None):
+            with self.subTest(version=version):
+                if version is None:
+                    data.pop("tool_version", None)
+                else:
+                    data["tool_version"] = version
+                config.write_text(json.dumps(data), encoding="utf-8")
+                before = self.snapshot()
+                code, report = self.check()
+                self.assertEqual(code, 0, report)
+                self.assertTrue(any("legacy standard log layout" in x for x in report["warnings"]))
+                self.assertEqual(self.run_cli("check", "--require-ready")[0], 1)
+                self.assertEqual(self.run_cli("index", "--apply")[0], 2)
+                self.assertEqual(before, self.snapshot())
+
+    def test_legacy_schema_standard_log_layout_warns_without_changing_history(self):
+        self.init("--mode", "standard")
+        (self.root / memory.ENTRY).rename(self.root / memory.LEGACY_ENTRY)
+        protocol = self.root / "AGENTS.md"
+        protocol.write_text(memory.read_text(protocol).replace("README.md", "入口.md"), encoding="utf-8")
+        config = self.root / ".memory.json"
+        data = json.loads(memory.read_text(config))
+        data.update(schema_version=1, tool_version="2.1.0")
+        data.pop("navigation")
+        config.write_text(json.dumps(data), encoding="utf-8")
+        agents = self.project / "AGENTS.md"
+        agents.write_text(memory.read_text(agents).replace("wiki_memory/README.md", "wiki_memory/入口.md"), encoding="utf-8")
+        directory = self.root / "日志/Bug处理"
+        (directory / ".gitkeep").unlink()
+        directory.rmdir()
+        before = self.snapshot()
+        code, report = self.check()
+        self.assertEqual(code, 0, report)
+        self.assertTrue(any("legacy standard log layout" in x for x in report["warnings"]))
+        self.assertEqual(self.run_cli("check", "--require-ready")[0], 1)
+        self.assertEqual(before, self.snapshot())
+
+    def test_standard_category_symlink_escape_is_read_only_and_blocks_index(self):
+        self.init("--mode", "standard")
+        directory = self.root / "日志/工程维护"
+        (directory / ".gitkeep").unlink()
+        directory.rmdir()
+        with tempfile.TemporaryDirectory(prefix="wiki-memory-external-category-") as outside:
+            external = Path(outside)
+            sentinel = external / "sentinel.txt"
+            sentinel.write_bytes(b"external original\n")
+            try:
+                directory.symlink_to(external, target_is_directory=True)
+            except OSError:
+                self.skipTest("directory symlinks unavailable")
+            before = self.snapshot()
+            code, report = self.check()
+            self.assertEqual(code, 1, report)
+            self.assertTrue(any("symlinked" in x for x in report["errors"]))
+            self.assertEqual(self.run_cli("index", "--apply")[0], 2)
+            self.assertEqual(before, self.snapshot())
+            self.assertEqual(list(external.iterdir()), [sentinel])
+            self.assertEqual(sentinel.read_bytes(), b"external original\n")
+            escaped = external / "outside.md"
+            escaped.write_bytes(b"# External page\n")
+            before = self.snapshot()
+            code, report = self.check()
+            self.assertEqual(code, 1, report)
+            self.assertTrue(any("symlinked" in x for x in report["errors"]))
+            self.assertEqual(self.run_cli("index", "--apply")[0], 2)
+            self.assertEqual(before, self.snapshot())
+            self.assertEqual(escaped.read_bytes(), b"# External page\n")
+
+    def test_standard_init_rolls_back_log_placeholders_after_late_failure(self):
+        agents = self.project / "AGENTS.md"
+        agents.write_bytes(b"Original project rules\n")
+        before = self.snapshot()
+        original = memory.atomic_write
+
+        def fail(path, data, **kwargs):
+            if path.name == ".memory.json":
+                self.assertTrue(all((self.root / "日志" / folder / ".gitkeep").exists()
+                                    for folder in memory.LOG_CATEGORIES.values()))
+                raise OSError("simulated failure after category creation")
+            return original(path, data, **kwargs)
+
+        with mock.patch.object(memory, "atomic_write", side_effect=fail):
+            self.assertEqual(self.run_cli("init", "--mode", "standard", "--apply")[0], 2)
+        self.assertEqual(before, self.snapshot())
+        self.assertFalse(self.root.exists())
+        self.assertFalse((self.project / ".wiki-memory.lock").exists())
+
+    def test_index_detects_standard_category_deleted_after_validation(self):
+        self.init("--mode", "standard")
+        self.add_page("知识/new.md")
+        directory = self.root / "日志/测试验证"
+        original = memory.index_contents
+        before_entry = (self.root / memory.ENTRY).read_bytes()
+
+        def remove_category(pages):
+            (directory / ".gitkeep").unlink()
+            directory.rmdir()
+            return original(pages)
+
+        with mock.patch.object(memory, "index_contents", side_effect=remove_category):
+            code, _, error = self.run_cli("index", "--apply")
+        self.assertEqual(code, 2, error)
+        self.assertIn("directory changed while generating indexes", error)
+        self.assertEqual((self.root / memory.ENTRY).read_bytes(), before_entry)
+        self.assertFalse((self.root / "知识/MOC_知识.md").exists())
+        self.assertFalse(directory.exists())
 
     def test_preserves_agents_bytes_and_uses_nonempty_override(self):
         original = b"\xef\xbb\xbf# Rules\r\n\r\nKeep this.\r\n"
