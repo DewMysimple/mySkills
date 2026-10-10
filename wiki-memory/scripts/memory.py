@@ -36,7 +36,8 @@ KINDS = set(LOG_CATEGORIES)
 ENTRY = Path("README.md")
 LEGACY_ENTRY = Path("入口.md")
 LOG_INDEX = Path("日志/MOC_工作日志.md")
-VERSION = "3.1.0"
+VERSION = "3.2.0"
+READ_BUDGET = {"startup_chars": 16000, "page_chars": 6000, "todo_items": 20}
 CATALOGS = {
     "state": (Path("当前状态/MOC_状态.md"), "历史状态目录"),
     "decision": (Path("决策/MOC_决策.md"), "工程决策目录"),
@@ -170,7 +171,8 @@ def without_code(text: str) -> str:
             continue
         if fence is None:
             result.append(line)
-    return re.sub(r"(`+).*?\1", "", "\n".join(result))
+    prose = re.sub(r"<!--[\s\S]*?(?:-->|$)", "", "\n".join(result))
+    return re.sub(r"(`+).*?\1", "", prose)
 
 
 def links(text: str):
@@ -260,11 +262,282 @@ def refuse_competing_memory(project: Path, memory: Path, instructions: str):
             raise ValueError(f"existing memory found at {rel}; inspect/migrate it instead of initializing another location")
 
 
-def has_memory_hook(text: str, relative: str, entry: Path = ENTRY):
-    normalized = text.replace("\\", "/")
+def instruction_prose(text: str) -> str:
+    """Keep inline path literals and hook markers, exclude documentation examples."""
+    lines, fence, length, comment = [], None, 0, False
+    for line in text.splitlines():
+        if fence is None:
+            visible, position = [], 0
+            while position < len(line):
+                if comment:
+                    end = line.find("-->", position)
+                    if end < 0:
+                        break
+                    comment, position = False, end + 3
+                else:
+                    start = line.find("<!--", position)
+                    if start < 0:
+                        visible.append(line[position:])
+                        break
+                    visible.append(line[position:start])
+                    end = line.find("-->", start)
+                    marker = line[start:end + 3] if end >= 0 else ""
+                    if marker in {HOOK_START, HOOK_END} and line.strip() == marker:
+                        visible.append(marker)
+                        position = end + 3
+                    else:
+                        comment, position = True, start + 4
+            line = "".join(visible)
+        marker = re.match(r"^\s*(`{3,}|~{3,})(.*)$", line)
+        if marker:
+            chars, tail = marker.groups()
+            if fence is None:
+                fence, length = chars[0], len(chars)
+            elif chars[0] == fence and len(chars) >= length and not tail.strip():
+                fence = None
+            continue
+        if fence is None and not re.match(r"^(?: {4}|\t|\s*>)", line):
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def memory_hook_status(text: str, relative: str, entry: Path = ENTRY):
+    normalized = instruction_prose(text).replace("\\", "/")
     flags = re.IGNORECASE if os.name == "nt" else 0
-    return all(re.search(r"(?<![\w./-])(?:\./)?" + re.escape(relative + "/" + name) + r"(?![\w.-])", normalized, flags)
-               for name in ("AGENTS.md", entry.as_posix()))
+    def references(prose):
+        # Natural-language directives remain a manual-review concern. Obvious
+        # negative examples must not count as affirmative discovery instructions.
+        clauses = re.split(r"[;\n；。]|(?<=[.!?])\s+", prose)
+        eligible = "\n".join(line for line in clauses if not re.search(
+            r"不要|禁止|不得|无需|不必|\b(?:never|do\s+not|don't|must\s+not)\b", line, re.IGNORECASE))
+        return (bool(re.search(r"读取|阅读|\b(?:read|load)\b", eligible, re.IGNORECASE))
+                and all(re.search(r"(?<![\w./-])(?:\./)?" + re.escape(relative + "/" + name)
+                                  + r"(?![\w/-]|\.[\w.-])", eligible, flags)
+                        for name in ("AGENTS.md", entry.as_posix())))
+    starts, ends = normalized.count(HOOK_START), normalized.count(HOOK_END)
+    if starts or ends:
+        if starts != 1 or ends != 1 or normalized.index(HOOK_START) > normalized.index(HOOK_END):
+            return "invalid"
+        block = normalized.split(HOOK_START, 1)[1].split(HOOK_END, 1)[0]
+        return "managed" if references(block) else "invalid"
+    return "legacy" if references(normalized) else "missing"
+
+
+def has_memory_hook(text: str, relative: str, entry: Path = ENTRY):
+    return memory_hook_status(text, relative, entry) in {"managed", "legacy"}
+
+
+def read_budget_config(data: dict):
+    overrides = data.get("read_budget", {})
+    if (not isinstance(overrides, dict) or set(overrides) - READ_BUDGET.keys()
+            or any(type(value) is not int or value < 0 for value in overrides.values())):
+        raise ValueError("read_budget supports nonnegative integer startup_chars/page_chars/todo_items; 0 disables a limit")
+    return {**READ_BUDGET, **overrides}
+
+
+def read_budget_report(project: Path, memory: Path, pages: list[Page], data: dict):
+    limits = read_budget_config(data)
+    mode = data.get("mode", "lite")
+    titles = ["项目概览", "当前约束", "当前待办"] if mode == "standard" else ["当前状态"]
+    override = project / "AGENTS.override.md"
+    agents = override if override.exists() and read_text(override).lstrip("\ufeff").strip() else project / "AGENTS.md"
+    startup = [agents, memory / "AGENTS.md", memory / ENTRY]
+    startup.extend(memory / "当前状态" / (title + ".md") for title in titles)
+    sizes = {p.path: len(p.original.decode("utf-8").lstrip("\ufeff")) for p in pages}
+    startup_sizes = {p.relative_to(project).as_posix(): len(read_text(p).lstrip("\ufeff"))
+                     for p in startup if p.is_file() and within(p, project)}
+    todo_title = "当前待办" if mode == "standard" else "当前状态"
+    todo = next((p for p in pages if p.path == Path("当前状态") / (todo_title + ".md")), None)
+    items = 0
+    if todo:
+        sections = {"进行中", "下一步", "阻塞与恢复位置"} if mode == "standard" else {"当前进度与已知问题", "恢复位置与下一步"}
+        current = None
+        for line in without_code(todo.body).splitlines():
+            heading = re.fullmatch(r"##\s+(.+?)\s*", line)
+            if heading:
+                current = heading.group(1)
+            elif current in sections and re.match(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)", line) and not re.match(r"^\s*[-*+]\s+\[[xX]\]", line):
+                items += 1
+    warnings = []
+    total = sum(startup_sizes.values())
+    if limits["startup_chars"] and total > limits["startup_chars"]:
+        warnings.append(f"read budget: startup pages total {total} characters exceeds {limits['startup_chars']}; keep navigation short and move detail to task-specific pages")
+    for path, size in sizes.items():
+        if limits["page_chars"] and size > limits["page_chars"]:
+            warnings.append(f"{path.as_posix()}: read budget: {size} characters exceeds {limits['page_chars']}; split stable topics or move completed detail to logs")
+    if limits["todo_items"] and items > limits["todo_items"]:
+        warnings.append(f"read budget: pending todo entries {items} exceeds {limits['todo_items']}; retain the current focus and link the backlog")
+    return {"unit": "characters (not model tokens)", "limits": limits, "startup_pages": startup_sizes,
+            "startup_chars": total, "todo_items": items, "warnings": warnings}
+
+
+def project_markdown_paths(project: Path):
+    """Reference inventory, excluding dependencies, build output and symlinks."""
+    excluded = {".git", "node_modules", "vendor", ".venv", "venv", "env", "dist", "build", "__pycache__", ".cache"}
+    for directory, folders, files in os.walk(project, followlinks=False):
+        folders[:] = sorted(name for name in folders if name not in excluded
+                            and not name.startswith(".") and not (Path(directory) / name).is_symlink())
+        for name in sorted(files):
+            path = Path(directory) / name
+            if path.suffix.lower() == ".md" and not path.is_symlink() and within(path, project):
+                yield path
+
+
+def migration_plan(project: Path, memory: Path, mode: str | None):
+    """Inventory only: no writes, guessed classifications or automatic link edits."""
+    destination = project / "wiki_memory"
+    safe_write_target(destination, project)
+    pages = load_pages(memory)
+    config_path = memory / ".memory.json"
+    blockers, observations = [], []
+    try:
+        data = json.loads(read_text(config_path).lstrip("\ufeff")) if config_path.is_file() else {}
+        if not isinstance(data, dict):
+            raise ValueError("configuration must be an object")
+    except (ValueError, UnicodeError) as exc:
+        data = {}
+        blockers.append(f".memory.json: {exc}")
+    current_mode = data.get("mode")
+    if not isinstance(current_mode, str) or current_mode not in {"lite", "standard"}:
+        current_mode = "standard" if all(any(p.path == Path("当前状态") / (title + ".md") for p in pages)
+                                          for title in STATE_TITLES["standard"]) else "lite"
+        observations.append(f"mode not configured; inferred {current_mode} from state filenames; verify the choice")
+    selected_mode = mode or current_mode
+    if current_mode == "standard" and selected_mode == "lite":
+        blockers.append("standard to lite requires an explicit content consolidation decision; this planner does not downgrade it")
+    if destination != memory and destination.exists():
+        blockers.append("target wiki_memory already exists; reconcile competing roots before moving files")
+    files = []
+    for path in sorted(memory.rglob("*")):
+        if path.is_symlink() or not within(path, memory):
+            blockers.append(f"refusing symlinked or escaping migration item: {path.relative_to(memory).as_posix()}")
+        elif path.is_file():
+            files.append(path)
+    mapping = {path.resolve(): destination / path.relative_to(memory) for path in files}
+    by_path = {p.path: p for p in pages}
+    unclassified = []
+    for page in pages:
+        if page.errors:
+            blockers.extend(f"{page.rel}: {error}" for error in page.errors)
+        if selected_mode != "standard" or page.fields.get("type") != "log":
+            continue
+        kind = page.fields.get("kind")
+        if not isinstance(kind, str) or kind not in LOG_CATEGORIES:
+            unclassified.append({"path": page.rel, "kind": kind, "reason": "read the task record and select its primary kind; do not infer from the filename"})
+            continue
+        # Keep subtask paths, replacing an old category rather than nesting it.
+        tail = page.path.parts[2:] if len(page.path.parts) > 2 and page.path.parts[0] == "日志" else (page.path.name,)
+        mapping[(memory / page.path).resolve()] = destination / "日志" / LOG_CATEGORIES[kind] / Path(*tail)
+    merges = []
+    old_entry = memory / LEGACY_ENTRY
+    if old_entry.is_file():
+        sources = [old_entry]
+        if (memory / ENTRY).is_file():
+            sources.insert(0, memory / ENTRY)
+        mapping[old_entry.resolve()] = destination / ENTRY
+        merges.append({"sources": [p.relative_to(project).as_posix() for p in sources],
+                       "destination": (destination / ENTRY).relative_to(project).as_posix(),
+                       "action": "merge manual explanations outside the generated region, repair references, then retire 入口.md; preserve all nonduplicate content"})
+    grouped = {}
+    for source, target in mapping.items():
+        grouped.setdefault(target, []).append(source)
+    conflicts = []
+    for target, sources in sorted(grouped.items()):
+        navigation_merge = target == destination / ENTRY and set(sources) <= {(memory / ENTRY).resolve(), old_entry.resolve()}
+        if len(sources) > 1 and not navigation_merge:
+            conflicts.append({"destination": target.relative_to(project).as_posix(),
+                              "sources": [p.relative_to(project).as_posix() for p in sources], "reason": "multiple source files map to the same destination"})
+        if target.exists() and target.resolve() not in sources and not navigation_merge:
+            conflicts.append({"destination": target.relative_to(project).as_posix(),
+                              "sources": [p.relative_to(project).as_posix() for p in sources], "reason": "destination is occupied; never overwrite it"})
+    references, unresolved = [], []
+    scanned = 0
+    for path in project_markdown_paths(project):
+        scanned += 1
+        source_path = path.resolve()
+        page = by_path.get(path.relative_to(memory)) if within(path, memory) else None
+        if page is None:
+            try:
+                page = parse_page(Path(os.path.relpath(path, memory)), read_text(path))
+            except (OSError, UnicodeError) as exc:
+                observations.append(f"reference scan skipped {path.relative_to(project).as_posix()}: {exc}; inspect its encoding/access manually")
+                continue
+        new_source = mapping.get(source_path, path)
+        targets = [(kind, raw, "body") for kind, raw in links(page.body)]
+        for field in ("sources", "source_logs", "supersedes"):
+            values = page.fields.get(field, [])
+            if not isinstance(values, list):
+                values = [values]
+            for value in values:
+                if isinstance(value, str) and value.strip():
+                    nested = list(links(value)) or [("source" if field == "sources" else "wiki", value)]
+                    targets.extend((kind, raw, field) for kind, raw in nested)
+        for kind, raw, field in targets:
+            try:
+                target = resolve_target(kind, raw, page, project, memory, pages, require_exists=False)
+                if target is None:
+                    continue
+                if not target.exists():
+                    if source_path in mapping or within(target, memory):
+                        unresolved.append({"file": path.relative_to(project).as_posix(), "field": field, "target": raw, "reason": "target is already missing; manually trace its revision or repair it"})
+                    continue
+                new_target = mapping.get(target, target)
+                if kind == "source":
+                    proposed = new_target.relative_to(project).as_posix()
+                    changed = new_target != target
+                elif kind == "wiki":
+                    if not within(new_target, destination):
+                        if new_source != source_path:
+                            unresolved.append({"file": path.relative_to(project).as_posix(), "field": field, "target": raw, "reason": "wiki target outside the new memory root; replace with a project-relative Markdown link"})
+                        continue
+                    proposed = new_target.relative_to(destination).as_posix()
+                    proposed = "".join(quote(char, safe="") if char in "%#?[]|" else char for char in proposed)
+                    changed = new_target != target or memory != destination
+                else:
+                    proposed = quote(Path(os.path.relpath(new_target, new_source.parent)).as_posix(), safe="/")
+                    changed = new_target != target or new_source.parent != source_path.parent
+                if not changed:
+                    continue
+                if kind != "source":
+                    suffix = re.search(r"[#?].*$", raw)
+                    if suffix:
+                        proposed += suffix.group()
+                references.append({"file": path.relative_to(project).as_posix(), "file_after": new_source.relative_to(project).as_posix(),
+                                   "field": field, "kind": kind, "target": raw, "proposed_target": proposed})
+            except (ValueError, OSError) as exc:
+                unresolved.append({"file": path.relative_to(project).as_posix(), "field": field, "target": raw, "reason": str(exc)})
+        # Root hooks often use inline code literals, which are not Markdown links.
+        if path.parent == project and path.name in {"AGENTS.md", "AGENTS.override.md", "README.md"}:
+            prose = instruction_prose(read_text(path)).replace("\\", "/")
+            old_relative = memory.relative_to(project).as_posix()
+            for name in ("AGENTS.md", ENTRY.as_posix(), LEGACY_ENTRY.as_posix()):
+                old = old_relative + "/" + name
+                new = "wiki_memory/" + (ENTRY.as_posix() if name == LEGACY_ENTRY.as_posix() else name)
+                if old != new and re.search(r"(?<![\w./-])(?:\./)?" + re.escape(old) + r"(?![\w.-])", prose):
+                    references.append({"file": path.name, "file_after": path.name, "field": "instruction prose",
+                                       "kind": "literal", "target": old, "proposed_target": new})
+    required = []
+    for title in STATE_TITLES[selected_mode]:
+        page = by_path.get(Path("当前状态") / (title + ".md"))
+        issues = state_readiness(page, title) if page else ["missing state page"]
+        if issues:
+            required.append({"path": "当前状态/" + title + ".md", "sections": STATE_SECTIONS[title], "issues": issues})
+    return {"read_only": True, "source": memory.relative_to(project).as_posix(), "destination": "wiki_memory",
+            "current_mode": current_mode, "target_mode": selected_mode,
+            "moves": [{"source": p.relative_to(project).as_posix(), "destination": target.relative_to(project).as_posix()}
+                      for p, target in sorted(mapping.items()) if p != target],
+            "navigation_merges": merges, "conflicts": conflicts, "unclassified_logs": unclassified,
+            "affected_references": references, "unresolved_references": unresolved,
+            "reference_scan": {"markdown_files": scanned, "scope": "project Markdown, metadata sources and root instruction literals; dependencies/build output/symlinks excluded; code/config literals require manual review"},
+            "configuration_changes": {"schema_version": 2, "mode": selected_mode, "navigation": "README.md", "tool_version": VERSION},
+            "required_state_work": required,
+            "required_log_directories": ["日志/" + name for name in LOG_CATEGORIES.values()] if selected_mode == "standard" else [],
+            "blockers": blockers, "observations": observations,
+            "manual_steps": ["re-read files and resolve conflicts/unclassified logs before executing this advisory plan",
+                             "preserve history, dates, recorded commands and custom configuration/protocol fields",
+                             "populate required state content from project evidence; retire duplicate active lite state only after consolidation",
+                             "update root hooks and the project tool/protocol without overwriting custom rules",
+                             "preview/apply index, run check --require-ready, then review content and diff"]}
 
 
 def resolve_target(kind, raw, source: Page, project: Path, memory: Path, pages: list[Page], require_exists=True):
@@ -387,8 +660,11 @@ def state_readiness(page: Page, title: str) -> list[str]:
     for heading in STATE_SECTIONS[title]:
         if heading not in sections:
             issues.append(f"{page.rel}: required section missing: {heading}")
-        elif sections[heading] in {"", "- 待核实。", "- " + STATE_PROMPTS[heading]}:
-            issues.append(f"{page.rel}: required section is still scaffold: {heading}")
+        else:
+            visible = re.sub(r"<!--[\s\S]*?(?:-->|$)", "", sections[heading])
+            visible = re.sub(r"^\s*(?:#{1,6}\s+.*|`{3,}.*|~{3,}.*)$", "", visible, flags=re.MULTILINE).strip()
+            if visible in {"", "-", "- 待核实。", "- " + STATE_PROMPTS[heading]}:
+                issues.append(f"{page.rel}: required section is still scaffold: {heading}")
     return issues
 
 
@@ -521,7 +797,8 @@ def inspect(project: Path, memory: Path, pages: list[Page], today: date, stale_d
             if not within(config, memory):
                 raise ValueError("configuration escapes memory directory")
             data = json.loads(config_bytes.decode("utf-8-sig"))
-            if not isinstance(data, dict) or data.get("schema_version") not in {1, 2} or data.get("mode") not in {"lite", "standard"}:
+            if (not isinstance(data, dict) or type(data.get("schema_version")) is not int
+                    or data.get("schema_version") not in {1, 2} or data.get("mode") not in {"lite", "standard"}):
                 raise ValueError("unsupported schema_version or mode")
             if data["schema_version"] == 1:
                 entry = LEGACY_ENTRY
@@ -543,6 +820,9 @@ def inspect(project: Path, memory: Path, pages: list[Page], today: date, stale_d
             if (not isinstance(defaults, dict) or any(k not in {"kind", "importance"} for k in defaults)
                     or any(not isinstance(v, str) or not v.strip() for v in defaults.values())):
                 raise ValueError("moc_defaults supports only nonempty kind/importance strings")
+            read_budget_config(data)
+            if not metadata_only:
+                warnings.extend(read_budget_report(project, memory, pages, data)["warnings"])
             by_path = {p.path: p for p in pages}
             for path in (entry, LOG_INDEX, *(item[0] for item in CATALOGS.values())):
                 page = by_path.get(path)
@@ -569,8 +849,11 @@ def inspect(project: Path, memory: Path, pages: list[Page], today: date, stale_d
         agents = override if override.exists() and read_text(override).lstrip("\ufeff").strip() else project / "AGENTS.md"
         rel = memory.relative_to(project).as_posix()
         text = read_text(agents) if agents.exists() else ""
-        if not has_memory_hook(text, rel, entry):
+        hook = memory_hook_status(text, rel, entry)
+        if hook not in {"managed", "legacy"}:
             (errors if require_ready else warnings).append("effective root instructions lack memory hook; verify session discovery")
+        elif hook == "legacy":
+            warnings.append("effective root instructions use an unmarked legacy memory hook; manually verify affirmative reading instructions and nested overrides")
     elif require_ready:
         errors.append("configuration missing; --require-ready requires schema_version 2 and README.md navigation")
     return sorted(set(errors)), sorted(set(warnings))
@@ -670,9 +953,10 @@ def initialize(project: Path, memory: Path, mode: str, today: date):
         instruction_text = previous.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ValueError("root instructions are not UTF-8; preserve them and adapt encoding before init") from exc
-    if b"wiki-memory:start" in previous or b"wiki-memory:end" in previous:
+    visible = instruction_prose(instruction_text)
+    if HOOK_START in visible or HOOK_END in visible:
         raise ValueError("existing memory hook found; inspect before changing it")
-    refuse_competing_memory(project, memory, instruction_text)
+    refuse_competing_memory(project, memory, visible)
     protocol = Path(__file__).resolve().parents[1] / "assets/protocol.md"
     if not protocol.is_file():
         raise ValueError("init must run from the Skill package, which contains assets/protocol.md")
@@ -695,7 +979,7 @@ def initialize(project: Path, memory: Path, mode: str, today: date):
     for path, generated in index_contents(pages).items():
         target = memory / path
         plan[target] = replace_auto(plan[target].decode("utf-8"), generated, path).encode("utf-8")
-    plan[memory / ".memory.json"] = (json.dumps({"schema_version": 2, "mode": mode, "tool_version": VERSION, "navigation": ENTRY.as_posix()}, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    plan[memory / ".memory.json"] = (json.dumps({"schema_version": 2, "mode": mode, "tool_version": VERSION, "navigation": ENTRY.as_posix(), "read_budget": READ_BUDGET}, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     plan[memory / "工具/memory.py"] = Path(__file__).read_bytes()
     newline = "\r\n" if b"\r\n" in previous else "\n"
     block = (f"{HOOK_START}\n## 工程记忆\n\n"
@@ -848,10 +1132,10 @@ def main(argv=None):
             stream.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", action="version", version=f"wiki-memory {VERSION}")
-    parser.add_argument("command", choices=("init", "check", "index"))
+    parser.add_argument("command", choices=("init", "check", "index", "plan-migration"))
     parser.add_argument("--project", default=".")
     parser.add_argument("--memory-dir", default="wiki_memory")
-    parser.add_argument("--mode", choices=("lite", "standard"), default="lite")
+    parser.add_argument("--mode", choices=("lite", "standard"), help="init: default lite; plan-migration: default existing mode")
     parser.add_argument("--date", type=date.fromisoformat, default=date.today(), help="local verification date (YYYY-MM-DD)")
     parser.add_argument("--stale-days", type=int, default=90)
     parser.add_argument("--apply", action="store_true", help="write the previewed init/index files")
@@ -860,24 +1144,40 @@ def main(argv=None):
     try:
         if args.command == "check" and args.apply:
             raise ValueError("check is read-only; --apply is not accepted")
+        if args.command == "plan-migration" and args.apply:
+            raise ValueError("plan-migration is read-only; --apply is not accepted")
+        if args.mode is not None and args.command not in {"init", "plan-migration"}:
+            raise ValueError("--mode is accepted only by init and plan-migration")
         if args.require_ready and args.command != "check":
             raise ValueError("--require-ready is accepted only by read-only check")
         if args.stale_days < 0:
             raise ValueError("stale-days must be nonnegative")
         project, memory = locations(args.project, args.memory_dir)
         if args.command == "init":
-            plan, agents, previous = initialize(project, memory, args.mode, args.date)
+            plan, agents, previous = initialize(project, memory, args.mode or "lite", args.date)
             apply_plan(plan, project, args.apply, agents, previous, new_root=memory)
             return 0
+        if args.command == "plan-migration":
+            report = migration_plan(project, memory, args.mode)
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 1 if report["blockers"] or report["conflicts"] or report["unclassified_logs"] else 0
         pages = load_pages(memory)
         if args.command == "check":
             errors, warnings = inspect(project, memory, pages, args.date, args.stale_days, require_ready=args.require_ready)
-            print(json.dumps({"pages": len(pages), "errors": errors, "warnings": warnings}, ensure_ascii=False, indent=2))
+            budget = None
+            try:
+                config_data = json.loads(read_text(memory / ".memory.json").lstrip("\ufeff"))
+                if isinstance(config_data, dict):
+                    budget = read_budget_report(project, memory, pages, config_data)
+            except (OSError, ValueError, TypeError, UnicodeError):
+                pass  # Configuration errors already appear in the check report.
+            print(json.dumps({"pages": len(pages), "errors": errors, "warnings": warnings, "read_budget": budget}, ensure_ascii=False, indent=2))
             return 1 if errors else 0
         config = memory / ".memory.json"
         config_snapshot = observed_bytes(config)
         config_data = json.loads(config_snapshot.decode("utf-8-sig")) if config_snapshot is not None else {}
         if (memory != project / "wiki_memory" or not isinstance(config_data, dict)
+                or type(config_data.get("schema_version")) is not int
                 or config_data.get("schema_version") != 2 or config_data.get("navigation") != ENTRY.as_posix()
                 or (memory / LEGACY_ENTRY).exists()):
             raise ValueError("legacy memory cannot be indexed by this version; migrate to <project>/wiki_memory, merge navigation into README.md, repair references and set schema_version 2/navigation README.md first")

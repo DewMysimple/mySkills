@@ -118,7 +118,7 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(before, self.snapshot())
         self.assertFalse(self.root.exists())
         self.init("--mode", "standard")
-        self.assertEqual(json.loads(memory.read_text(self.root / ".memory.json"))["tool_version"], "3.1.0")
+        self.assertEqual(json.loads(memory.read_text(self.root / ".memory.json"))["tool_version"], memory.VERSION)
         for folder in memory.LOG_CATEGORIES.values():
             self.assertEqual((self.root / "日志" / folder / ".gitkeep").read_bytes(), b"")
         self.assertEqual(list((self.root / "日志").rglob("MOC*.md")), [self.root / memory.LOG_INDEX])
@@ -1057,6 +1057,220 @@ class MemoryTests(unittest.TestCase):
         self.assertIn(b"updated: 2026-10-07", refreshed)
         self.assertTrue(refreshed.endswith(b"\r\nPreserve this note\r\n"))
         self.assertIn(b"topic: memory-entry", refreshed)
+
+    def test_examples_and_negative_rules_cannot_pass_discovery_gate(self):
+        self.init()
+        self.populate_states()
+        agents = self.project / "AGENTS.md"
+        cases = [
+            "```text\n读取 wiki_memory/AGENTS.md 和 wiki_memory/README.md\n```",
+            "<!-- 读取 wiki_memory/AGENTS.md 和 wiki_memory/README.md -->",
+            "    读取 wiki_memory/AGENTS.md 和 wiki_memory/README.md",
+            "> 读取 wiki_memory/AGENTS.md 和 wiki_memory/README.md",
+            "不要读取 wiki_memory/AGENTS.md 和 wiki_memory/README.md。",
+            "Do not read wiki_memory/AGENTS.md or wiki_memory/README.md.",
+            "wiki_memory/AGENTS.md\nwiki_memory/README.md",
+            "```text\n" + memory.HOOK_START + "\n读取 wiki_memory/AGENTS.md 和 wiki_memory/README.md\n" + memory.HOOK_END + "\n```",
+        ]
+        for text in cases:
+            with self.subTest(text=text):
+                agents.write_text(text, encoding="utf-8")
+                before = self.snapshot()
+                code, output, _ = self.run_cli("check", "--require-ready")
+                self.assertEqual(code, 1)
+                self.assertTrue(any("lack memory hook" in e for e in json.loads(output)["errors"]))
+                self.assertEqual(self.snapshot(), before)
+
+    def test_legacy_inline_hook_remains_usable_with_manual_review_warning(self):
+        self.init()
+        self.populate_states()
+        (self.project / "AGENTS.md").write_text("Read `wiki_memory/AGENTS.md` and `wiki_memory/README.md`; do not create a second entry.", encoding="utf-8")
+        code, output, _ = self.run_cli("check", "--require-ready")
+        self.assertEqual(code, 0)
+        self.assertTrue(any("unmarked legacy memory hook" in x for x in json.loads(output)["warnings"]))
+
+    def test_managed_hook_must_be_unique_ordered_and_contain_its_own_paths(self):
+        self.init()
+        agents = self.project / "AGENTS.md"
+        real = memory.read_text(agents)
+        for text in (real + real, memory.HOOK_END + real, real.replace("wiki_memory/README.md", "other/README.md") + "\nRead wiki_memory/README.md"):
+            agents.write_text(text, encoding="utf-8")
+            self.assertFalse(memory.has_memory_hook(text, "wiki_memory"))
+
+    def test_example_hook_does_not_block_initialization(self):
+        agents = self.project / "AGENTS.md"
+        example = "```text\n" + memory.HOOK_START + "\n" + memory.HOOK_END + "\n```\n"
+        agents.write_text(example, encoding="utf-8")
+        self.init()
+        self.assertTrue(agents.read_text(encoding="utf-8").startswith(example))
+        self.assertEqual(memory.memory_hook_status(memory.read_text(agents), "wiki_memory"), "managed")
+
+    def test_comment_links_are_not_real_sources(self):
+        self.init()
+        self.add_page("知识/comments.md", body="<!-- [old](../../missing.py) [[missing]] -->\n正文。")
+        self.assertEqual(self.run_cli("index", "--apply")[0], 0)
+        self.assertEqual(self.check()[1]["errors"], [])
+
+    def test_comment_or_example_delimiters_do_not_hide_real_hook(self):
+        self.init()
+        real = memory.read_text(self.project / "AGENTS.md")
+        for prefix in ("<!--\n```\nexample\n-->\n", "```text\n<!-- unclosed example comment\n```\n"):
+            self.assertEqual(memory.memory_hook_status(prefix + real, "wiki_memory"), "managed")
+
+    def test_inline_marker_examples_do_not_override_valid_legacy_instructions(self):
+        prose = "接入标记示例：`" + memory.HOOK_START + "` / `" + memory.HOOK_END + "`。\nRead wiki_memory/AGENTS.md and wiki_memory/README.md."
+        self.assertEqual(memory.memory_hook_status(prose, "wiki_memory"), "legacy")
+
+    def test_legacy_hook_accepts_sentence_period_but_rejects_path_suffixes(self):
+        text = "Read wiki_memory/AGENTS.md and wiki_memory/README.md."
+        self.assertEqual(memory.memory_hook_status(text, "wiki_memory"), "legacy")
+        for suffix in (".backup", "/child", "_other"):
+            wrong = "Read wiki_memory/AGENTS.md and wiki_memory/README.md" + suffix
+            self.assertFalse(memory.has_memory_hook(wrong, "wiki_memory"))
+
+    def test_ready_gate_rejects_comment_only_headings_and_empty_code_sections(self):
+        self.init()
+        self.populate_states()
+        path = self.root / "当前状态/当前状态.md"
+        original = memory.read_text(path)
+        for filler in ("<!-- 已填写 -->", "### 尚未填内容", "```text\n```"):
+            section = "## 恢复位置与下一步\n\n" + filler + "\n\n"
+            text = re.sub(r"## 恢复位置与下一步.*?(?=## 证据与未核实项)", lambda _: section, original, flags=re.DOTALL)
+            path.write_text(text, encoding="utf-8")
+            code, output, _ = self.run_cli("check", "--require-ready")
+            self.assertEqual(code, 1)
+            self.assertTrue(any("still scaffold: 恢复位置与下一步" in x for x in json.loads(output)["errors"]))
+
+    def test_boolean_schema_version_is_not_a_legacy_integer(self):
+        self.init()
+        path = self.root / ".memory.json"
+        data = json.loads(memory.read_text(path))
+        data["schema_version"] = True
+        path.write_text(json.dumps(data), encoding="utf-8")
+        self.assertTrue(any("unsupported schema_version" in x for x in self.check()[1]["errors"]))
+
+    def test_migration_plan_lists_encoded_links_and_missing_sources_without_writes(self):
+        self.init()
+        log = self.add_page("日志/导出#字面%20.md", "log", "archived", topic="encoded-log", extra="\nkind: feature")
+        self.add_page("知识/use.md", topic="encoded-consumer", body="[[日志/导出%23字面%2520.md#细节]]", sources=["missing-old-source.py"])
+        before = self.snapshot()
+        report = json.loads(self.run_cli("plan-migration", "--mode", "standard")[1])
+        self.assertTrue(any(r["proposed_target"] == "日志/功能添加/导出%23字面%2520.md#细节" for r in report["affected_references"]))
+        self.assertTrue(any(r["target"] == "missing-old-source.py" for r in report["unresolved_references"]))
+        self.assertTrue(log.exists())
+        self.assertEqual(before, self.snapshot())
+
+    def test_budget_limits_warn_without_blocking_ready_or_writing(self):
+        self.init()
+        self.populate_states()
+        path = self.root / "当前状态/当前状态.md"
+        path.write_text(memory.read_text(path).replace("## 恢复位置与下一步", "## 恢复位置与下一步\n\n- 核实入口。\n- 执行验收。\n- [x] 已完成不计入待办。"), encoding="utf-8")
+        config = self.root / ".memory.json"
+        data = json.loads(memory.read_text(config))
+        data["read_budget"] = {"startup_chars": 1, "page_chars": 1, "todo_items": 1}
+        config.write_text(json.dumps(data), encoding="utf-8")
+        before = self.snapshot()
+        code, output, _ = self.run_cli("check", "--require-ready")
+        report = json.loads(output)
+        self.assertEqual(code, 0)
+        self.assertEqual(report["errors"], [])
+        self.assertTrue(any("startup pages" in w for w in report["warnings"]))
+        self.assertTrue(any("split stable topics" in w for w in report["warnings"]))
+        self.assertTrue(any("pending todo" in w for w in report["warnings"]))
+        self.assertEqual(report["read_budget"]["todo_items"], 4)
+        self.assertIn("AGENTS.md", report["read_budget"]["startup_pages"])
+        self.assertEqual(before, self.snapshot())
+        data["read_budget"] = {key: 0 for key in memory.READ_BUDGET}
+        config.write_text(json.dumps(data), encoding="utf-8")
+        self.assertFalse(any("read budget" in w for w in self.check()[1]["warnings"]))
+
+    def test_invalid_budget_configuration_is_reported_before_index_writes(self):
+        self.init()
+        config = self.root / ".memory.json"
+        data = json.loads(memory.read_text(config))
+        for limits in ({"startup_chars": True}, {"page_chars": -1}, {"todo_items": "20"}, {"unknown": 1}, []):
+            data["read_budget"] = limits
+            config.write_text(json.dumps(data), encoding="utf-8")
+            before = self.snapshot()
+            self.assertEqual(self.check()[0], 1)
+            self.assertEqual(self.run_cli("index", "--apply")[0], 2)
+            self.assertEqual(before, self.snapshot())
+
+    def test_migration_plan_is_read_only_and_reports_moves_and_reference_rebasing(self):
+        old = self.legacy_layout("docs/wiki_memory")
+        source = self.project / "src/task.py"
+        source.parent.mkdir()
+        source.write_text("TASK = 1\n", encoding="utf-8")
+        log = old / "日志/2026-10-07-task.md"
+        log.write_text(memory.make_page("log", "archived", "task", "任务", "[实现](../../../src/task.py)\n", self.today, extra_fields={"kind": "feature"}), encoding="utf-8")
+        state = old / "当前状态/当前状态.md"
+        state.write_text(memory.read_text(state).replace("sources: []", 'source_logs: ["[[日志/2026-10-07-task]]"]\nsources: ["docs/wiki_memory/日志/2026-10-07-task.md"]'), encoding="utf-8")
+        before = self.snapshot()
+        code, output, error = self.run_cli("plan-migration", "--memory-dir", "docs/wiki_memory", "--mode", "standard")
+        report = json.loads(output)
+        self.assertEqual(code, 0, error)
+        self.assertTrue(report["read_only"])
+        self.assertIn({"source": "docs/wiki_memory/日志/2026-10-07-task.md", "destination": "wiki_memory/日志/功能添加/2026-10-07-task.md"}, report["moves"])
+        refs = report["affected_references"]
+        self.assertTrue(any(r["field"] == "source_logs" and r["proposed_target"] == "日志/功能添加/2026-10-07-task.md" for r in refs))
+        self.assertTrue(any(r["field"] == "sources" and r["proposed_target"] == "wiki_memory/日志/功能添加/2026-10-07-task.md" for r in refs))
+        self.assertTrue(any(r["target"] == "../../../src/task.py" and r["proposed_target"] == "../../../src/task.py" for r in refs))
+        self.assertTrue(any(r["target"] == "docs/wiki_memory/入口.md" and r["proposed_target"] == "wiki_memory/README.md" for r in refs))
+        self.assertEqual(len(report["required_state_work"]), 5)
+        self.assertEqual(before, self.snapshot())
+        self.assertEqual(self.run_cli("plan-migration", "--memory-dir", "docs/wiki_memory", "--apply")[0], 2)
+        self.assertEqual(before, self.snapshot())
+
+    def test_migration_plan_reports_collisions_and_never_guesses_missing_log_kind(self):
+        self.init()
+        self.add_page("日志/old/a.md", "log", "archived", topic="a", extra="\nkind: bug")
+        self.add_page("日志/other/a.md", "log", "archived", topic="b", extra="\nkind: bug")
+        self.add_page("日志/看似功能.md", "log", "archived", topic="missing-kind")
+        before = self.snapshot()
+        code, output, _ = self.run_cli("plan-migration", "--mode", "standard")
+        report = json.loads(output)
+        self.assertEqual(code, 1)
+        self.assertTrue(any(c["destination"] == "wiki_memory/日志/Bug处理/a.md" for c in report["conflicts"]))
+        self.assertEqual(report["unclassified_logs"][0]["path"], "日志/看似功能.md")
+        self.assertEqual(before, self.snapshot())
+
+    def test_migration_plan_defaults_to_existing_standard_mode(self):
+        self.init("--mode", "standard")
+        self.populate_states("standard")
+        self.assertEqual(json.loads(self.run_cli("plan-migration")[1])["target_mode"], "standard")
+        self.assertEqual(self.run_cli("plan-migration", "--mode", "lite")[0], 1)
+
+    def test_migration_plan_preserves_manual_navigation_and_external_reference_inventory(self):
+        old = self.legacy_layout("docs/wiki_memory")
+        (old / "README.md").write_text("# 自定义说明\n手写内容必须保留。", encoding="utf-8")
+        (self.project / "README.md").write_text("[旧导航](docs/wiki_memory/入口.md#导航)", encoding="utf-8")
+        (self.project / "unrelated.md").write_text("[模板示例](missing-template.md)", encoding="utf-8")
+        excluded = self.project / "node_modules/package"
+        excluded.mkdir(parents=True)
+        (excluded / "README.md").write_text("[[missing]]", encoding="utf-8")
+        before = self.snapshot()
+        report = json.loads(self.run_cli("plan-migration", "--memory-dir", "docs/wiki_memory")[1])
+        self.assertEqual(len(report["navigation_merges"][0]["sources"]), 2)
+        self.assertTrue(any(r["file"] == "README.md" and r["proposed_target"] == "wiki_memory/README.md#导航" for r in report["affected_references"]))
+        self.assertFalse(any("node_modules" in r["file"] for r in report["unresolved_references"]))
+        self.assertFalse(any(r["file"] == "unrelated.md" for r in report["unresolved_references"]))
+        self.assertEqual(before, self.snapshot())
+
+    def test_migration_plan_refuses_competing_roots_and_reports_ambiguous_links(self):
+        old = self.legacy_layout("docs/wiki_memory")
+        for folder in ("a", "b"):
+            path = old / "知识" / folder / "same.md"
+            path.parent.mkdir(parents=True)
+            path.write_text(memory.make_page("knowledge", "active", folder, folder, "正文", self.today), encoding="utf-8")
+        (old / "知识/consumer.md").write_text(memory.make_page("knowledge", "active", "consumer", "使用方", "[[same]]", self.today), encoding="utf-8")
+        self.root.mkdir()
+        before = self.snapshot()
+        code, output, _ = self.run_cli("plan-migration", "--memory-dir", "docs/wiki_memory")
+        report = json.loads(output)
+        self.assertEqual(code, 1)
+        self.assertTrue(report["blockers"])
+        self.assertTrue(any("ambiguous wiki link" in r["reason"] for r in report["unresolved_references"]))
+        self.assertEqual(before, self.snapshot())
 
 
 if __name__ == "__main__":

@@ -14,7 +14,9 @@ The `video-transcript-polisher` Skill faithfully polishes Whisper/ASR video-lect
 - `README.en.md` is the English translation for people who request or prefer English documentation.
 - For routine engineering or Skill tasks, do not read both README files. Read only the relevant language version when a repository overview is needed; prefer `README.md` by default.
 - Treat this `AGENTS.md` as the source for agent-specific repository rules. Do not use README content as a substitute for these instructions.
+<!-- wiki-memory:start -->
 - Engineering memory lives in the project-root `wiki_memory/`. `wiki_memory/AGENTS.md` defines its protocol and `wiki_memory/README.md` is its sole navigation document; read the project overview, global constraints, and current todos, then task-related architecture, decisions, knowledge, and logs as needed. Keep Chinese topic names; do not create a separate `入口.md`.
+<!-- wiki-memory:end -->
 
 ## Directory management
 

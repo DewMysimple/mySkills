@@ -74,11 +74,18 @@ standard 必须保留以下六个分类目录，每篇任务日志的 `kind` 必
 python "__MEMORY_DIR__/工具/memory.py" index --project "." --memory-dir "__MEMORY_DIR__" --apply
 python "__MEMORY_DIR__/工具/memory.py" check --project "." --memory-dir "__MEMORY_DIR__"
 python "__MEMORY_DIR__/工具/memory.py" check --project "." --memory-dir "__MEMORY_DIR__" --require-ready
+python "__MEMORY_DIR__/工具/memory.py" plan-migration --project "." --mode standard
 ```
 
 `index` 只刷新自动区和 MOC 的 `updated` 日期；知识、决策页按需进入目录 MOC，其他手写内容放在标记外。工具锁只协调该工具的写入；其他编辑器与 Agent 仍需合并各自改动。遇到锁或并发变更先检查当前状态，不自动删除锁或循环覆盖重试。
 
 `check` 只读，结果通过仍需核对语义。`--require-ready` 要求所选模式必需状态页 active、有非空来源、对应章节非空且未原样保留初始化提示语；standard 还必须有六个日志目录，并且日志 `kind` 与目录一致。它不证明正文充分或来源支持结论，空模板不能视为成功。历史源码失效是追溯提示，历史内部断链仍需修复。没有 Python 时手动保持索引与引用一致，并说明工具未运行。
+
+接入检查排除代码块、注释及明显否定示例；正式接入块须成对且唯一。旧式无标记的手写规则可以继续使用，但仍须人工核对其读取指令和深层覆盖，不能把两个路径出现当成接入已生效。
+
+读取预算按 Unicode 字符数统计，不是模型 token。默认启动必读总量 16000 字符（生效根指令、协议、README 和所选模式必读状态），记忆单页 6000 字符，待办焦点列表 20 项。`.memory.json` 可用 `"read_budget": {"startup_chars": 16000, "page_chars": 6000, "todo_items": 20}` 部分覆盖，0 关闭该限制；只能填非负整数。check 输出实际统计；超限只提示，不影响退出码、不自动拆页。将稳定细节移到专题、完成内容移到日志，完整 backlog 链接原计划，保留证据、约束和恢复下一步。
+
+`plan-migration` 始终只读且拒绝 --apply，默认沿用当前模式，--mode standard 可规划升级。输出移动映射、导航合并、重名冲突、受影响引用、未分类日志及必需状态工作；不猜测 kind、不修链接、不更新配置。引用覆盖项目 Markdown、元数据和根指令路径，排除依赖、构建产物和符号链接；代码及其他配置文字仍需人工盘点。计划生成后先解决冲突、歧义和未分类项，重读文件再执行；退出码 0 不表示内容已就绪或可以直接照单执行。
 
 新布局配置使用 `schema_version: 2`、`navigation: "README.md"`。旧位置、旧 schema 和旧版 standard 平铺日志可只读盘点；索引写入前须显式迁移到工程根的 wiki_memory，合并旧 README 与独立入口的手写内容，并完成 standard 日志分类。移动日志时修正正文相对链接、记忆内部引用与元数据来源；保留历史内容、日期和当时命令，不能只改配置字段声称完成迁移。
 

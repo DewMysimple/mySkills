@@ -3,36 +3,34 @@ type: knowledge
 status: active
 kind: module
 importance: high
-updated: 2026-10-09
-verified: 2026-10-09
+updated: 2026-10-10
+verified: 2026-10-10
 topic: skill-wiki-memory
-sources: ["wiki-memory/SKILL.md", "wiki-memory/scripts/memory.py", "wiki-memory/scripts/test_memory.py", "wiki-memory/assets/protocol.md", "wiki-memory/assets/standard-log-layout", "wiki-memory/references/memory-model.md", "wiki-memory/references/llm-wiki.md", "wiki_memory/.memory.json", "wiki_memory/工具/memory.py"]
+sources: ["wiki-memory/SKILL.md", "wiki-memory/scripts/memory.py", "wiki-memory/scripts/test_memory.py", "wiki-memory/scripts/handoff_cases.py", "wiki-memory/assets/protocol.md", "wiki-memory/references/memory-model.md", "wiki-memory/references/handoff-evaluation.md", "wiki_memory/.memory.json", "wiki_memory/工具/memory.py"]
 ---
 
 # Skill：工程记忆
 
-维护入口是 `wiki-memory/SKILL.md`。协议模板、按需参考和脚本分别承担项目协议、模式/页面/迁移说明及初始化/索引/体检。
+入口为 wiki-memory/SKILL.md；3.2.0 主入口约 2738 字符，初始化合同、页面写法、迁移和预算在 references/memory-model.md 按需读。项目内 AGENTS 保留完整协议，独立工具不依赖个人安装位置。
 
-## 布局与内容合同
+## 布局与来源
 
-- 用户明确要求记忆在工程根目录 `wiki_memory/`。README 是唯一导航和使用说明，AGENTS 是维护协议；取消独立入口页，保留中文专题名称。选择依据见 [[决策/ADR-003-根目录记忆与README统一导航.md|ADR-003]]。
-- 用户指定 standard 时完整维护五页。各页按 Skill 表格的小节填写目标、架构、约束、焦点、问题、证据及恢复上下文；不靠空文件或配置字段宣称已完成。不默认复制全部代码文档或编造决策。
-- 新建仍需先预览，`--apply` 才写入。3.1.0 增加 standard 日志分类，配置仍为 schema `2` 和 `navigation: README.md`；Python 3.10+、标准库运行。项目内工具是独立副本，升级须对比定制协议，不能只改版本字段。
-- standard 必须六类日志目录，按主要 kind 归档；lite 可以平铺。六目录及虚构日志样例保存在 `assets/standard-log-layout/`，初始化仅建立分类和 `.gitkeep`，不复制样例为真实历史。布局依据见 [[决策/ADR-004-标准日志分类与理论溯源.md|ADR-004]]。
-- 用户原模板的 `llm-wiki.md` 原样保存在 `references/llm-wiki.md`，可选阅读；出处和摘要边界见模型说明。其个人知识库示例、工具建议和理论断言不替代工程协议、不扩大操作授权。
-- 旧位置/旧 schema 可以只读 check；index 必须先迁移根目录位置、合并导航、修引用和配置。不能重新 init 覆盖旧记忆，也不能只改版本字段。自定义旧索引名要显式合并到标准 MOC。
+用户指定根目录 wiki_memory/、README 唯一导航、中文专题及 standard 六类日志，依据 [[决策/ADR-003-根目录记忆与README统一导航.md|ADR-003]]、[[决策/ADR-004-标准日志分类与理论溯源.md|ADR-004]]；这些选择没有改变。standard 完成五页实质状态，lite 为一页；示例不复制为真实历史，可选理论原文保持原样。
 
-## 核实与工具
+区分需求、选择、实现和漂移，来源按项目相对路径记录。协议与命令更新保留本地约定、历史日期、结论和当时命令；source Skill 更新不批量升级其他项目。
 
-- 普通 check 不代表初始事实已完成；配置交付运行 `check --require-ready`，核对所选模式必需状态 active、有来源、必需小节非空且不是原样初始化提示。结构通过后仍人工核实事实、来源支持程度和实际测试范围。
-- 索引只更新生成区与 MOC 编辑日期，保留手写内容。写入有锁、文件/配置/页面集合快照及失败回滚；其他编辑器和并行 Agent 仍需协调。
-- 已修复知识/状态/决策文件名含 `#`、字面 `%20` 时自生成断链，以及 Windows `.MD` 页面触发错误并发提示的问题。普通中文路径保持可读，仅保留字符编码。
-- 首次接入若需要 Git 交付，核对实际远程引用；工具不联网、不自行提交推送。一个项目的持续授权不传给另一个项目。
+## 工具行为与设计选择
 
-## 实际验证与限制
+- init 先预览，--apply 才写入；已有记忆不重新初始化。index 只刷新生成区和 MOC 编辑日期，有锁、快照检查、原子写入和失败回滚。
+- check 排除代码块、注释、引用及明显否定示例，正式接入块须唯一且成对；无标记旧接入兼容但警告人工复核。根 AGENTS 的原读取规则现已加正式标记，权限内容未改。
+- read_budget 统计 Unicode 字符，默认启动 16000、单页 6000、待办 20；可部分覆盖，0 禁用。超限只提示；非法配置仍报错。默认阈值由 Agent 在用户授权整改范围内选定，不是用户明确指定值，也不冒充模型 token。
+- plan-migration 始终只读并拒绝 --apply，列出移动、导航合并、引用修正、冲突、未分类日志和状态工作。不猜 kind、不自动执行；项目 Markdown 外的代码/配置文字仍需人工盘点。
+- schema 仍为 2、navigation 为 README.md；本仓库工具/配置/协议显式升级 3.2.0，moc_defaults 与 mySkills 定制规则保留。历史 memory_lint.py 不混用。
 
-2026-10-09，Windows / Python 3.14.2，基线 `82c2d83` 加本次日志分类变更：`python -B -X utf8 wiki-memory/scripts/test_memory.py` 81 项通过；Skill 结构校验通过。本仓库工具副本 3.1.0 的 index 与 `check --require-ready` 已实际执行，32页零错误、零警告；lion 项目副本19页通过。分类、历史保全与理论原文核验结果见 [[日志/工程维护/2026-10-09-补齐标准日志分类与理论参考.md|本次日志]]。
+## 验证与接续
 
-上轮 3.0.0 的68项测试、根目录导航迁移和内容合同属于 [[日志/工程维护/2026-10-09-统一根目录记忆与标准内容合同.md|此前整改记录]]，不混为本轮执行。
+2026-10-10，Windows / Python 3.14.2，基线 60057b3 加本任务未提交变更：99 项脚本回归、Skill 结构校验通过；四个无历史上下文的隔离 Agent 完成接续、冲突、分支和升级评测。前三个案例文件全部保持原样；升级案例原源码、配置、测试与历史日志哈希保持原样，12 页严格体检通过。
 
-历史 2.1.0 的 55 项测试属于 2026-10-07，见 [[日志/Bug处理/2026-10-07-实践问题复盘与修复.md|实践复盘日志]]，不替代当前验证。未证明所有平台兼容性、全部敏感内容检测或模型不会遗忘；真实项目语义仍依赖源码与用户要求核实。
+维护者用 scripts/handoff_cases.py 在临时目录生成真实可运行小工程；实际结果及读取统计见 references/handoff-evaluation.md。评测观察到长参考输出截断和导航重复读取，已加按章读取提示；不把自查或脚本单测当作独立换会话验证。一次小工程评测不证明所有平台、真实大型项目或模型不会遗忘。
+
+以前 3.1.0 的 81 项测试和其他项目结果仅属历史，见 [[日志/工程维护/2026-10-09-补齐标准日志分类与理论参考.md|此前日志]]；本次只升级 mySkills 副本和隔离材料。任务记录及最终本仓库检查见 [[日志/工程维护/2026-10-10-完善工程记忆校验与交接评测.md|整改日志]]。

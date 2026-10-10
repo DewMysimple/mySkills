@@ -1,10 +1,15 @@
 {
   "schema_version": 2,
   "mode": "standard",
-  "tool_version": "3.1.0",
+  "tool_version": "3.2.0",
   "moc_defaults": {
     "kind": "process",
     "importance": "high"
   },
-  "navigation": "README.md"
+  "navigation": "README.md",
+  "read_budget": {
+    "startup_chars": 16000,
+    "page_chars": 6000,
+    "todo_items": 20
+  }
 }

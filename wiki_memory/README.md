@@ -3,62 +3,39 @@ type: moc
 status: active
 kind: process
 importance: high
-updated: 2026-10-09
+updated: 2026-10-10
 topic: memory-entry
 sources: []
 ---
 
 # mySkills 工程记忆
 
-这是 mySkills 的可审计 Markdown 工程记忆。日志保留事件历史，当前状态、决策和知识页保存经来源核实的结论；实际代码、项目指令和用户要求优先。
+日志保留历史，当前状态、决策和知识保存有来源的结论；实际代码、项目指令和用户要求优先。本页只说明与导航，维护规则见 [AGENTS.md](AGENTS.md)。
 
-本项目使用工程根目录的 `wiki_memory/`，采用 `standard`。2026-10-07 由 Agent 根据三个 Skill 独立迭代的边界选择五页布局；2026-10-09 用户明确要求根目录位置和 README 统一导航，保留中文专题名称。选择与验收见 [[决策/ADR-003-根目录记忆与README统一导航.md|记忆布局决策]]。
+本项目采用根目录 wiki_memory/ 和 standard：2026-10-07 按三个独立 Skill 的维护边界选用五页；2026-10-09 用户明确根目录、README 唯一导航及六类日志。依据：[[决策/ADR-003-根目录记忆与README统一导航.md|布局决策]]、[[决策/ADR-004-标准日志分类与理论溯源.md|日志与理论决策]]。
 
 ## 读取与维护
 
-1. 先读 [维护协议](AGENTS.md)，每轮必读项目概览、当前约束、当前待办，再按任务读取架构、问题、决策和模块知识。
-2. 当前分支、revision 与未提交改动以当轮 Git 检查为准；不要将旧日志的验证视为当前验证。当前事实只保存在状态和专题页，本页负责说明和导航。
-3. 实质修改结束后同步相关记忆并留日志，刷新索引，再体检和人工核查。持续提交推送授权见项目根 `AGENTS.md`。
+先读协议及概览、约束、待办三页，再按任务定位专题；历史按需检索。接续时重查 Git 分支、revision 和工作区。实质修改结束后同步相关页、留日志、刷新索引并人工核实；提交推送授权见项目根 AGENTS.md。
 
 ```text
-python -X utf8 "wiki_memory/工具/memory.py" index --project "." --apply
-python -X utf8 "wiki_memory/工具/memory.py" check --project "." --require-ready
+python -X utf8 "wiki_memory/工具/memory.py" index --project . --apply
+python -X utf8 "wiki_memory/工具/memory.py" check --project . --require-ready
 ```
 
-`check --require-ready` 检查必需状态页、章节与证据字段，不能代替源码语义核实。历史 `memory_lint.py` 保留追溯，不再运行它的整页索引写入。
+结构通过不证明语义正确。读取预算只提示；迁移先运行只读 plan-migration。历史 memory_lint.py 不与当前索引混用。
 
-## 目录与职责
-
-```text
-wiki_memory/
-├── AGENTS.md       # 维护协议
-├── README.md       # 系统说明与唯一导航
-├── .memory.json    # standard 布局、导航与工具版本
-├── 当前状态/        # 项目概览、系统架构、当前约束、当前待办、已知问题
-├── 决策/           # 已采用选择、候选及替代关系
-├── 知识/           # 模块、流程、规范和运维专题
-├── 日志/           # 单一 MOC 与按 kind 分类的追加式历史
-│   ├── 功能添加/
-│   ├── UI修改/
-│   ├── Bug处理/
-│   ├── 工程讨论/
-│   ├── 测试验证/
-│   └── 工程维护/
-├── 模板/           # 本仓库已有页面模板
-└── 工具/           # 当前 memory.py 与历史 memory_lint.py
-```
-
-记忆随 Git 保存。`wiki-memory/` 是可分发 Skill，`wiki_memory/` 是本仓库记忆，二者独立；个人 Skill 安装不自动升级项目工具。
-
-## 专题分类
+## 专题与历史
 
 - [[知识/模块/README.md|模块知识]]
 - [[知识/流程/README.md|流程知识]]
 - [[知识/规范/README.md|工程规范]]
 - [[知识/运维/README.md|运维知识]]
-- [工作日志目录](日志/MOC_工作日志.md)
+- [工作日志](日志/MOC_工作日志.md)：standard 按六类 kind 归档，空目录保留 .gitkeep，仅维护一个日志 MOC。
 
-本项目采用 standard，日志按主要交付物的 `kind` 写入对应分类目录，六类保留；空目录用 `.gitkeep` 随 Git 保存。2026-10-09 用户明确要求恢复原模板的文件夹分类，详见 [[决策/ADR-004-标准日志分类与理论溯源.md|日志布局与理论溯源决策]]。可复用示例和可选理论背景分别位于 `wiki-memory/assets/standard-log-layout/`、`wiki-memory/references/llm-wiki.md`；示例不会复制为项目真实历史。
+状态、决策、知识、日志各自保存事实与历史；模板/ 保留本仓库模板，工具/ 保存独立工具副本。wiki-memory/ 是可分发 Skill，wiki_memory/ 是本仓库文档，随 Git 保存；安装 Skill 不自动升级项目。
+
+[日志布局示例](../wiki-memory/assets/standard-log-layout/) 是虚构教学内容，[理论原文](../wiki-memory/references/llm-wiki.md) 可选阅读，均不当作项目历史。
 
 <!-- wiki-memory:auto:start -->
 

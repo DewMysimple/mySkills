@@ -41,6 +41,8 @@
 
 标准版的真实目录与虚构日志示例见 [日志布局样例](wiki-memory/assets/standard-log-layout/)。[LLM Wiki 理论原文](wiki-memory/references/llm-wiki.md) 随 Skill 保留供按需查阅，来源与工程化边界见 [记忆模型](wiki-memory/references/memory-model.md)。
 
+3.2.0 增加正式接入检查、可配置字符预算和只读 `plan-migration`：预算超限只提示，迁移计划列出移动、引用和冲突，不自动执行。维护者可用 [隔离换会话评测](wiki-memory/references/handoff-evaluation.md) 验证接续、源码冲突、分支变化及模式升级。
+
 ### 课堂转录 video-transcript-polisher
 
 获取仓库后，将需要使用的 Skill 目录导入你的 Codex Skills 配置中，然后可以显式调用：
@@ -87,9 +89,11 @@ mySkills/
     │   └── standard-log-layout/  # 六个实际分类目录及示例日志
     ├── references/
     │   ├── memory-model.md
+    │   ├── handoff-evaluation.md # 按需运行的独立换会话评测
     │   └── llm-wiki.md           # 可选理论背景原文
     └── scripts/
         ├── memory.py
+        ├── handoff_cases.py     # 临时工程评测材料生成器
         └── test_memory.py
 ```
 
