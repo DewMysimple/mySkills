@@ -41,7 +41,7 @@
 
 标准版的真实目录与虚构日志示例见 [日志布局样例](wiki-memory/assets/standard-log-layout/)。[LLM Wiki 理论原文](wiki-memory/references/llm-wiki.md) 随 Skill 保留供按需查阅，来源与工程化边界见 [记忆模型](wiki-memory/references/memory-model.md)。
 
-3.2.0 增加正式接入检查、可配置字符预算和只读 `plan-migration`：预算超限只提示，迁移计划列出移动、引用和冲突，不自动执行。维护者可用 [隔离换会话评测](wiki-memory/references/handoff-evaluation.md) 验证接续、源码冲突、分支变化及模式升级。
+3.2.1 将此 Skill 设为仅显式调用：已建记忆的日常开发、同步、检索和交接直接遵循项目协议，不反复加载 Skill。日常修改记忆后只运行一次普通检查；首次配置、迁移或明确完整验收才运行严格检查，通过即结束。已有正式接入检查、字符预算和只读 `plan-migration` 保留，warning 不作为日常交付门槛。[隔离换会话评测](wiki-memory/references/handoff-evaluation.md) 是维护者按相关改动使用的工具，不是每轮任务的收尾流程。
 
 ### 课堂转录 video-transcript-polisher
 
@@ -101,17 +101,18 @@ mySkills/
 
 ## 仓库工程记忆
 
-本仓库采用标准版工程记忆，从 [wiki_memory/README.md](wiki_memory/README.md) 开始，并遵守 [记忆维护协议](wiki_memory/AGENTS.md)。每轮任务读取项目概览、当前约束和当前待办，再按所维护的 Skill 定位知识页；架构、问题、决策和历史按需读取。
+本仓库采用标准版工程记忆，从 [wiki_memory/README.md](wiki_memory/README.md) 开始，并遵守 [记忆维护协议](wiki_memory/AGENTS.md)。新会话读取项目概览、当前约束和当前待办，再按任务定位；同一上下文已读且未变的内容复用，架构、问题、决策和历史按需读取。
 
 `wiki-memory/` 是可复用的能力包，`wiki_memory/` 保存本仓库的事实和交接信息，两者独立。完成有文件修改的任务时，按 [AGENTS.md](AGENTS.md) 同步记忆、验证、提交并推送。
 
-在仓库根目录维护索引和体检：
+本仓库有实质修改时，在根目录统一刷新索引并普通检查一次：
 
 ```text
 python -X utf8 "wiki_memory/工具/memory.py" index --project "." --apply
 python -X utf8 "wiki_memory/工具/memory.py" check --project "."
-python -X utf8 "wiki_memory/工具/memory.py" check --project "." --require-ready
 ```
+
+初始化、迁移或明确完整验收时，将 check 换成 check --require-ready，不连续运行两者。不因普通同步调用 Skill、运行迁移计划或重跑 Skill 的全套测试；遵守根 AGENTS 中的实际验证与交付要求。
 
 ## 新增 Skill
 

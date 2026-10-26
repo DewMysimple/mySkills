@@ -3,7 +3,7 @@ type: knowledge
 status: active
 kind: module
 importance: high
-updated: 2026-10-10
+updated: 2026-10-26
 verified: 2026-10-10
 topic: skill-wiki-memory
 sources: ["wiki-memory/SKILL.md", "wiki-memory/scripts/memory.py", "wiki-memory/scripts/test_memory.py", "wiki-memory/scripts/handoff_cases.py", "wiki-memory/assets/protocol.md", "wiki-memory/references/memory-model.md", "wiki-memory/references/handoff-evaluation.md", "wiki_memory/.memory.json", "wiki_memory/工具/memory.py"]
@@ -11,7 +11,7 @@ sources: ["wiki-memory/SKILL.md", "wiki-memory/scripts/memory.py", "wiki-memory/
 
 # Skill：工程记忆
 
-入口为 wiki-memory/SKILL.md；3.2.0 主入口约 2738 字符，初始化合同、页面写法、迁移和预算在 references/memory-model.md 按需读。项目内 AGENTS 保留完整协议，独立工具不依赖个人安装位置。
+入口为 wiki-memory/SKILL.md；当前 3.2.1 仅在用户明确要求记忆管理时加载，agents/openai.yaml 设置 allow_implicit_invocation: false。已接入项目直接按项目内协议读取、同步和交接，不加载 Skill 或参考；独立工具不依赖个人安装位置。
 
 ## 布局与来源
 
@@ -25,7 +25,15 @@ sources: ["wiki-memory/SKILL.md", "wiki-memory/scripts/memory.py", "wiki-memory/
 - check 排除代码块、注释、引用及明显否定示例，正式接入块须唯一且成对；无标记旧接入兼容但警告人工复核。根 AGENTS 的原读取规则现已加正式标记，权限内容未改。
 - read_budget 统计 Unicode 字符，默认启动 16000、单页 6000、待办 20；可部分覆盖，0 禁用。超限只提示；非法配置仍报错。默认阈值由 Agent 在用户授权整改范围内选定，不是用户明确指定值，也不冒充模型 token。
 - plan-migration 始终只读并拒绝 --apply，列出移动、导航合并、引用修正、冲突、未分类日志和状态工作。不猜 kind、不自动执行；项目 Markdown 外的代码/配置文字仍需人工盘点。
-- schema 仍为 2、navigation 为 README.md；本仓库工具/配置/协议显式升级 3.2.0，moc_defaults 与 mySkills 定制规则保留。历史 memory_lint.py 不混用。
+- schema 仍为 2、navigation 为 README.md；本仓库工具/配置/协议显式升级 3.2.1，moc_defaults 与 mySkills 定制规则保留。历史 memory_lint.py 不混用。
+
+## 日常开销与停止条件
+
+2026-10-26 用户反馈任务完成后反复验证、已建记忆仍频繁调用 Skill，明确要求整改。当前策略：同一上下文复用未变化的已读内容，业务结果复用本任务已有验证；有持久变化才同步相关记忆。导航变化或项目要求时 index --apply 一次，有记忆修改或项目要求时普通 check 一次，无修改的普通 / 只读任务不检查。
+
+初始化、迁移、模式 / Schema 升级或明确完整验收才用 check --require-ready，替代普通 check。通过且相关文件未再变化即停止；warning 不阻断交付，不循环清零、复核全库或重跑历史测试。Skill 脚本回归与独立评测仅用于相关维护，不是使用记忆的项目的日常收尾。
+
+本机 Windows / Python 3.14.2，基线 ffc6a33 的 33 页：一次普通 check 0.297 秒、index 只读预览 0.113 秒（含 Python 启动）。这支持将整改重点放在流程重复，而非宣称大型项目扫描也同样快。新建模板、本仓库协议和根指令已同步；其他项目旧协议不自动升级。
 
 ## 验证与接续
 

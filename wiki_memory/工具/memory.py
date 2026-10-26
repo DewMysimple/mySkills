@@ -36,7 +36,7 @@ KINDS = set(LOG_CATEGORIES)
 ENTRY = Path("README.md")
 LEGACY_ENTRY = Path("入口.md")
 LOG_INDEX = Path("日志/MOC_工作日志.md")
-VERSION = "3.2.0"
+VERSION = "3.2.1"
 READ_BUDGET = {"startup_chars": 16000, "page_chars": 6000, "todo_items": 20}
 CATALOGS = {
     "state": (Path("当前状态/MOC_状态.md"), "历史状态目录"),
@@ -968,6 +968,7 @@ def initialize(project: Path, memory: Path, mode: str, today: date):
         body = summary + "\n\n".join(f"## {section}\n\n- {STATE_PROMPTS[section]}" for section in STATE_SECTIONS[title])
         plan[memory / "当前状态" / f"{title}.md"] = make_page("state", "proposed", STATE_TOPICS[title], title, body, today).encode("utf-8")
     entry_body = (f"初始布局：`{mode}`（当前布局以 `.memory.json` 为准）。先读当前状态，按任务定位决策、知识与历史。\n\n"
+                  "日常开发直接遵循项目内协议，不调用 wiki-memory Skill；仅用户明确要求记忆管理时使用 Skill。\n\n"
                   "- [记忆维护协议](AGENTS.md)\n- [工作日志 MOC](日志/MOC_工作日志.md)\n\n"
                   f"{AUTO_START}\n\n{AUTO_END}\n")
     plan[memory / ENTRY] = make_page("moc", "active", "memory-entry", "工程记忆导航", entry_body, today).encode("utf-8")
@@ -983,8 +984,9 @@ def initialize(project: Path, memory: Path, mode: str, today: date):
     plan[memory / "工具/memory.py"] = Path(__file__).read_bytes()
     newline = "\r\n" if b"\r\n" in previous else "\n"
     block = (f"{HOOK_START}\n## 工程记忆\n\n"
-             f"本项目使用工程根目录下的 `{rel}/`。开始任务前读取 `{rel}/AGENTS.md` 和 `{rel}/README.md`，按协议读取当前状态与全局约束，再定位相关决策和模块知识。\n"
+             f"本项目使用工程根目录下的 `{rel}/`。新会话读取 `{rel}/AGENTS.md` 和 `{rel}/README.md`，按协议读取当前状态与全局约束，再定位相关决策和模块知识；当前上下文已读且未变化的内容不重复加载。\n"
              "在已授权开发任务完成或中断时，按协议同步有证据的状态、验证和恢复下一步；只读任务遵守只读范围。\n"
+             "日常读取、同步和交接直接遵循项目协议，不调用 wiki-memory Skill。仅用户明确要求配置、迁移、体检等记忆管理时加载 Skill；检查频率按项目协议，不把完整验收用于每轮收尾。\n"
              f"{HOOK_END}\n").replace("\n", newline).encode("utf-8")
     separator = (newline * 2).encode("utf-8") if previous else b""
     plan[agents] = previous + separator + block

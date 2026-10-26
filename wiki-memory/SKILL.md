@@ -1,11 +1,15 @@
 ---
 name: wiki-memory
-description: "配置和维护项目根目录的工程记忆（wiki_memory）：用于初始化、迁移、同步、检索、体检、压缩和换会话交接。遵守用户指定模式与已有项目协议；普通编码任务不自动安装新体系，个人知识库和课堂笔记不在此范围。"
+description: "仅在用户明确要求配置、迁移、体检、压缩或专项维护工程记忆（wiki_memory）时使用。已接入记忆的日常开发、检索、同步与交接直接遵循项目协议，不调用本 Skill；个人知识库和课堂笔记不在此范围。"
 ---
 
 # 工程记忆 Wiki
 
 把会影响下一轮工作的事实、约束、决策和恢复线索留在 `<project-root>/wiki_memory/`。按当前状态、决策、知识和日志分层，不要求数据库、Obsidian 或网络服务。
+
+## 调用边界
+
+本 Skill 仅显式调用，`agents/openai.yaml` 禁用隐式调用。用户使用 $wiki-memory 或明确提出记忆管理任务时才加载；项目已有记忆、根指令要求同步、普通任务结束或换会话本身都不是再次调用的理由。已接入项目直接依照项目内协议工作，不回读本 Skill、参考或模板。同一会话已读的协议和状态可复用，仅在内容变化、切换工程或上下文缺失时补读所需部分。
 
 ## 按任务加载
 
@@ -13,8 +17,7 @@ description: "配置和维护项目根目录的工程记忆（wiki_memory）：�
 | --- | --- |
 | 配置新记忆 | 按下方配置流程执行，读 [初始化与内容合同](references/memory-model.md#初始化与验收) |
 | 迁移旧记忆 / lite 升级 standard | 先读原协议，运行只读迁移计划，再读 [迁移流程](references/memory-model.md#迁移已有体系)；不要重新 init |
-| 同步 / 换会话交接 | 读项目内协议与 README，核实受影响事实，保存实际验证、阻塞和可执行下一步 |
-| 检索 | 从 README、当前状态定位，再读相关有效决策和知识；需要来由时才查历史 |
+| 明确要求专项同步 / 检索 | 从项目协议、README 和当前状态定位，核实受影响事实；需要来由时才查历史 |
 | 体检 / 读取负担过大 | 运行 check，按需读 [读取预算](references/memory-model.md#读取预算)，人工核对过期事实 |
 | 压缩 | 按 [扩展与压缩](references/memory-model.md#扩展与压缩) 整理重复结论，保留来源和历史 |
 
@@ -42,18 +45,17 @@ description: "配置和维护项目根目录的工程记忆（wiki_memory）：�
 
 交付 README 路径、模式、实际验证和未核实项。只完成 init 的 proposed 脚手架不能宣称已配置。
 
-## 日常工具
+## 接入后的日常任务
 
-后续会话遵循项目内 `wiki_memory/AGENTS.md`：先读协议、README 与所选模式必读状态，再按当前任务检索；无需再次显式调用本 Skill。项目内工具是独立副本，在工程根运行：
+项目内协议和工具独立可用，无需个人 Skill 的安装位置。完成业务任务后，只同步本次有持久价值的变化；复用业务测试结果，不为记忆重跑业务测试。
 
-```text
-python "wiki_memory/工具/memory.py" index --project "." --apply
-python "wiki_memory/工具/memory.py" check --project "." --require-ready
-python "wiki_memory/工具/memory.py" plan-migration --project "." --mode standard
-```
+- 导航条目变化或项目要求时，统一运行一次 index --apply；普通正文修改不必先预览再应用。
+- 记忆有修改或项目要求时，收尾运行一次普通 check。初始化、迁移、模式 / Schema 升级或明确的完整验收才使用 check --require-ready，且替代普通 check，不连续运行两者。
+- 通过且相关文件未再变化就结束；仅在修复错误或新变更影响结果时重验。warning 不作为交付门槛；无关历史提示记录后按需处理，不循环消警、不追查全库旧证据。无记忆改动的日常任务不跑记忆检查，项目更严格规则除外。
+- plan-migration 只用于迁移；脚本全套回归和隔离换会话评测只在维护 Skill / 工具且相关改动需要时运行，不是每个使用此记忆的项目的收尾步骤。
 
-index 不带 --apply 只预览，只刷新标记区和 MOC 编辑日期。check 与 plan-migration 始终只读；预算超限只提示。迁移计划列出移动、导航合并、引用修正、冲突和未分类日志，执行前必须重读与核实，不自动猜测类型或写文件。旧位置使用 Skill 脚本并传 --memory-dir，详见迁移参考。
+命令与检查范围见项目协议；需调整工具行为时再读 [工具验证范围](references/memory-model.md#工具验证范围)。check 与 plan-migration 始终只读；迁移计划不自动执行，旧位置盘点使用 Skill 脚本及 --memory-dir，详见迁移参考。
 
-本版 3.2.0，配置 schema_version 2、navigation README.md。旧布局可只读盘点，索引写入前须显式完成迁移。项目副本升级先比较版本和定制规则，不批量改其他工程；check 通过仍需核对语义、证据和实际测试，不验证外部 URL、全部敏感内容或模型不会遗忘。
+本版 3.2.1，配置 schema_version 2、navigation README.md。旧布局可只读盘点，索引写入前须显式完成迁移。项目副本升级先比较版本和定制规则，不批量改其他工程；check 通过仍需核对本次变更的语义与证据，不验证外部 URL、全部敏感内容或模型不会遗忘。
 
 维护 Skill 时按需读 [隔离换会话评测](references/handoff-evaluation.md)。[llm-wiki 理论原文](references/llm-wiki.md) 是可选背景；[六类日志目录示例](assets/standard-log-layout/) 是虚构教学资产，不复制为项目历史。

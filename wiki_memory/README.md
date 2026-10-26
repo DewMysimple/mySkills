@@ -16,14 +16,14 @@ sources: []
 
 ## 读取与维护
 
-先读协议及概览、约束、待办三页，再按任务定位专题；历史按需检索。接续时重查 Git 分支、revision 和工作区。实质修改结束后同步相关页、留日志、刷新索引并人工核实；提交推送授权见项目根 AGENTS.md。
+新会话读协议及概览、约束、待办，再按任务定位；当前上下文已读且未变的内容复用，历史按需。日常读取、同步、交接直接执行本协议，不调用 wiki-memory Skill。实质修改结束后同步相关页和一份日志，统一刷新索引并普通检查一次；提交推送授权见根 AGENTS.md。
 
 ```text
 python -X utf8 "wiki_memory/工具/memory.py" index --project . --apply
-python -X utf8 "wiki_memory/工具/memory.py" check --project . --require-ready
+python -X utf8 "wiki_memory/工具/memory.py" check --project .
 ```
 
-结构通过不证明语义正确。读取预算只提示；迁移先运行只读 plan-migration。历史 memory_lint.py 不与当前索引混用。
+通过后结束；仅新变更或修错使结果失效才重验。初始化、迁移或明确完整验收才用 check --require-ready 替代普通检查；无记忆修改的普通任务不检查。warning 不阻断交付，人工核实限本次变化。迁移才用 plan-migration；历史 memory_lint.py 不与当前索引混用。
 
 ## 专题与历史
 
