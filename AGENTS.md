@@ -15,7 +15,7 @@ The `video-transcript-polisher` Skill faithfully polishes Whisper/ASR video-lect
 - For routine engineering or Skill tasks, do not read both README files. Read only the relevant language version when a repository overview is needed; prefer `README.md` by default.
 - Treat this `AGENTS.md` as the source for agent-specific repository rules. Do not use README content as a substitute for these instructions.
 <!-- wiki-memory:start -->
-- Engineering memory lives in the project-root `wiki_memory/`. `wiki_memory/AGENTS.md` defines its protocol and `wiki_memory/README.md` is its sole navigation document; read the project overview, global constraints, and current todos, then task-related architecture, decisions, knowledge, and logs as needed. Keep Chinese topic names; do not create a separate `入口.md`.
+- Engineering memory lives in the project-root `wiki_memory/`. Read `wiki_memory/AGENTS.md` and the sole navigation document `wiki_memory/README.md`. Follow the protocol for narrow read-only queries. For modifications, handoffs, or broad work, first read the project overview, global constraints, and current todos, then task-related sources as needed. Keep Chinese topic names and use README as the navigation entry.
 - Use the project memory protocol directly for routine reading, synchronization, and handoff; do not invoke the `wiki-memory` Skill unless the user explicitly requests memory management. Reuse unchanged instructions already read in the current context. Run memory checks once after relevant changes; full readiness acceptance is for initialization, migration, or an explicit audit.
 <!-- wiki-memory:end -->
 

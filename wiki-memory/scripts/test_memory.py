@@ -4,12 +4,15 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
 from unittest import mock
@@ -87,7 +90,26 @@ class MemoryTests(unittest.TestCase):
         before = self.snapshot()
         code, output, error = self.run_cli("init")
         self.assertEqual(code, 0, error)
-        self.assertFalse(json.loads(output)["apply"])
+        report = json.loads(output)
+        self.assertFalse(report["apply"])
+        self.assertEqual(report["mode"], "lite")
+        self.assertEqual(report["link_style"], "markdown")
+        self.assertEqual(report["blockers"], [])
+        self.assertEqual([entry["path"] for entry in report["changes"]], report["files"])
+        actions = {entry["path"]: entry["action"] for entry in report["changes"]}
+        self.assertEqual(actions["AGENTS.md"], "append")
+        self.assertEqual(actions["wiki_memory/README.md"], "create")
+        self.assertEqual(before, self.snapshot())
+
+    def test_init_preview_reports_existing_lock_without_writes(self):
+        (self.project / ".wiki-memory.lock").write_text("External writer\n", encoding="utf-8")
+        before = self.snapshot()
+        code, output, error = self.run_cli("init", "--mode", "standard", "--link-style", "wiki")
+        self.assertEqual(code, 0, error)
+        report = json.loads(output)
+        self.assertEqual((report["mode"], report["link_style"]), ("standard", "wiki"))
+        self.assertIn(".wiki-memory.lock", report["blockers"][0])
+        self.assertIn({"path": "AGENTS.md", "action": "create"}, report["changes"])
         self.assertEqual(before, self.snapshot())
 
     def test_lite_standalone_copied_tool(self):
@@ -324,10 +346,10 @@ class MemoryTests(unittest.TestCase):
         original = memory.index_contents
         before_entry = (self.root / memory.ENTRY).read_bytes()
 
-        def remove_category(pages):
+        def remove_category(pages, link_style):
             (directory / ".gitkeep").unlink()
             directory.rmdir()
-            return original(pages)
+            return original(pages, link_style)
 
         with mock.patch.object(memory, "index_contents", side_effect=remove_category):
             code, _, error = self.run_cli("index", "--apply")
@@ -390,6 +412,8 @@ class MemoryTests(unittest.TestCase):
         data = json.loads(memory.read_text(self.root / ".memory.json"))
         self.assertEqual(data["schema_version"], 2)
         self.assertEqual(data["navigation"], "README.md")
+        self.assertEqual(data["link_style"], "markdown")
+        self.assertIn("[当前状态](当前状态/当前状态.md)", memory.read_text(self.root / "README.md"))
         agents = memory.read_text(self.project / "AGENTS.md")
         self.assertIn("wiki_memory/README.md", agents)
         self.assertNotIn("wiki_memory/入口.md", agents)
@@ -791,6 +815,97 @@ class MemoryTests(unittest.TestCase):
             self.assertEqual(self.run_cli("init", "--memory-dir", "linked-memory/new", "--apply")[0], 2)
             self.assertEqual(list(external.iterdir()), [])
 
+    def test_root_instruction_symlink_escape_never_reads_target(self):
+        with tempfile.TemporaryDirectory(prefix="wiki-memory-root-rules-") as outside:
+            external = Path(outside).resolve() / "external.md"
+            external.write_bytes(b"Private instructions\n")
+            override = self.project / "AGENTS.override.md"
+            try:
+                override.symlink_to(external)
+            except OSError:
+                self.skipTest("file symlinks unavailable")
+            original_read = Path.read_bytes
+
+            def guarded_read(path):
+                self.assertNotIn(path, {override, external})
+                return original_read(path)
+
+            with mock.patch.object(Path, "read_bytes", guarded_read):
+                code, _, error = self.run_cli("init", "--apply")
+                self.assertEqual(code, 2)
+                self.assertIn("read target escapes", error)
+            self.assertFalse(self.root.exists())
+            override.unlink()
+            self.init()
+            override.symlink_to(external)
+            before = self.snapshot()
+            with mock.patch.object(Path, "read_bytes", guarded_read):
+                code, report = self.check()
+                self.assertEqual(code, 1)
+                self.assertTrue(any("root instructions: read target escapes" in error for error in report["errors"]))
+                self.assertEqual(self.run_cli("index", "--apply")[0], 2)
+            self.assertEqual(before, self.snapshot())
+            self.assertEqual(external.read_bytes(), b"Private instructions\n")
+
+    def test_escaping_memory_config_is_not_read_by_any_legacy_command(self):
+        self.init()
+        config = self.root / ".memory.json"
+        original = config.read_bytes()
+        with tempfile.TemporaryDirectory(prefix="wiki-memory-config-") as outside:
+            external = Path(outside).resolve() / "external.json"
+            external.write_bytes(original)
+            config.unlink()
+            try:
+                config.symlink_to(external)
+            except OSError:
+                self.skipTest("file symlinks unavailable")
+            before = self.snapshot()
+            original_read = Path.read_bytes
+
+            def guarded_read(path):
+                self.assertNotIn(path, {config, external})
+                return original_read(path)
+
+            with mock.patch.object(Path, "read_bytes", guarded_read):
+                code, report = self.check()
+                self.assertEqual(code, 1)
+                self.assertTrue(any("read target escapes" in error for error in report["errors"]))
+                code, output, _ = self.run_cli("plan-migration")
+                self.assertEqual(code, 1)
+                self.assertTrue(any("read target escapes" in blocker for blocker in json.loads(output)["blockers"]))
+                self.assertEqual(self.run_cli("index")[0], 2)
+                self.assertEqual(self.run_cli("index", "--apply")[0], 2)
+            self.assertEqual(before, self.snapshot())
+            self.assertEqual(external.read_bytes(), original)
+
+    def test_memory_and_migration_scans_skip_hidden_and_dependency_content(self):
+        self.init()
+        excluded = [
+            self.project / ".private.md",
+            self.project / "build/private.md",
+            self.root / "知识/.private.md",
+            self.root / "知识/.private/private.md",
+        ]
+        for path in excluded:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"Do not inspect this content.\n")
+        topic = self.add_page("知识/运维/env/运行环境.md")
+        self.assertEqual(self.run_cli("index", "--apply")[0], 0)
+        catalog = self.root / memory.CATALOGS["knowledge"][0]
+        self.assertIn(f"(运维/env/{topic.name})", memory.read_text(catalog))
+        before = self.snapshot()
+        original_read = Path.read_bytes
+
+        def guarded_read(path):
+            self.assertNotIn(path, excluded)
+            return original_read(path)
+
+        with mock.patch.object(Path, "read_bytes", guarded_read):
+            self.assertEqual(self.check()[0], 0)
+            code, _, error = self.run_cli("plan-migration")
+            self.assertEqual(code, 0, error)
+        self.assertEqual(before, self.snapshot())
+
     def test_old_dates_prompt_review_without_invalidating_facts(self):
         self.init()
         self.add_page("知识/old.md", extra="", body="当前实现仍需检查。")
@@ -871,9 +986,9 @@ class MemoryTests(unittest.TestCase):
         original = memory.index_contents
         before_entry = (self.root / memory.ENTRY).read_bytes()
 
-        def new_log(pages):
+        def new_log(pages, link_style):
             self.add_page("日志/concurrent.md", "log", "archived")
-            return original(pages)
+            return original(pages, link_style)
 
         with mock.patch.object(memory, "index_contents", side_effect=new_log):
             code, _, error = self.run_cli("index", "--apply")
@@ -976,6 +1091,43 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(self.run_cli("index")[0], 0)
         self.assertEqual(self.snapshot(), before)
 
+    def test_two_writers_detect_lock_and_require_fresh_snapshot(self):
+        self.init()
+        entry = self.root / memory.ENTRY
+        original = entry.read_bytes()
+        first = original + b"\nFirst writer's note.\n"
+        second_note = b"\nSecond writer's note.\n"
+        active, release = threading.Event(), threading.Event()
+        original_write = memory.atomic_write
+
+        def block_first(path, data, **kwargs):
+            if path == entry and data == first:
+                active.set()
+                if not release.wait(10):
+                    raise TimeoutError("test writer did not resume")
+            return original_write(path, data, **kwargs)
+
+        def write(data, expected):
+            memory.apply_plan({entry: data}, self.project, True, snapshots={entry: expected})
+
+        with contextlib.redirect_stdout(io.StringIO()), mock.patch.object(memory, "atomic_write", block_first):
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(write, first, original)
+                try:
+                    self.assertTrue(active.wait(10))
+                    with self.assertRaisesRegex(ValueError, "writer lock exists"):
+                        write(original + second_note, original)
+                    self.assertEqual(entry.read_bytes(), original)
+                finally:
+                    release.set()
+                future.result(timeout=10)
+            with self.assertRaisesRegex(ValueError, "file changed after it was read"):
+                write(original + second_note, original)
+            write(first + second_note, first)
+
+        self.assertEqual(entry.read_bytes(), first + second_note)
+        self.assertFalse((self.project / ".wiki-memory.lock").exists())
+
     def test_plain_source_path_can_contain_hash(self):
         self.init()
         source = self.project / "src/config#prod.py"
@@ -986,7 +1138,7 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(self.check()[1]["errors"], [])
 
     def test_generated_wiki_paths_encode_hash_and_literal_percent_once(self):
-        self.init()
+        self.init("--link-style", "wiki")
         first = self.add_page("知识/配置#生产.md", topic="hash-config")
         second = self.add_page("知识/配置%20字面.md", topic="percent-config")
         self.add_page("知识/消费者.md", topic="consumer", body="[[知识/配置%23生产.md]] 与 [[知识/配置%2520字面.md]]。")
@@ -1003,6 +1155,109 @@ class MemoryTests(unittest.TestCase):
         before = self.snapshot()
         self.assertEqual(self.run_cli("index", "--apply")[0], 0)
         self.assertEqual(before, self.snapshot())
+
+    def test_markdown_navigation_resolves_from_each_moc(self):
+        self.init("--mode", "standard")
+        title = "中文 [#]%20 (旧).md"
+        historical = self.add_page("历史 状态.md", "state", "archived")
+        decision = self.add_page("决策/模块/ADR-042-" + title, "decision")
+        knowledge = self.add_page("知识/一/" + title, topic="one")
+        duplicate_title = self.add_page("知识/二/" + title, topic="two")
+        log = self.add_page("日志/工程维护/子目录/" + title, "log", "archived",
+                            extra='\nkind: maintenance\ntask_status: completed')
+        code, _, error = self.run_cli("index", "--apply")
+        self.assertEqual(code, 0, error)
+        self.assertEqual(self.check()[1]["errors"], [])
+        pages = memory.load_pages(self.root)
+        by_path = {p.rel: p for p in pages}
+        expected = {
+            "README.md": {self.root / "当前状态/当前待办.md", self.root / "当前状态/MOC_状态.md",
+                          self.root / "决策/MOC_决策.md", self.root / "知识/MOC_知识.md"},
+            "当前状态/MOC_状态.md": {historical},
+            "决策/MOC_决策.md": {decision},
+            "知识/MOC_知识.md": {knowledge, duplicate_title},
+            "日志/MOC_工作日志.md": {log},
+        }
+        for source, targets in expected.items():
+            with self.subTest(source=source):
+                page = by_path[source]
+                generated = page.body.split(memory.AUTO_START)[1].split(memory.AUTO_END)[0]
+                links = list(memory.links(generated))
+                self.assertTrue(links)
+                self.assertTrue(all(kind == "markdown" for kind, _ in links))
+                self.assertLessEqual(targets, {
+                    memory.resolve_target(kind, raw, page, self.project, self.root, pages)
+                    for kind, raw in links
+                })
+        self.assertIn("(../历史%20状态.md)", by_path["当前状态/MOC_状态.md"].body)
+        self.assertIn("(一/中文%20%5B%23%5D%2520%20%28旧%29.md)", by_path["知识/MOC_知识.md"].body)
+        before = self.snapshot()
+        self.assertEqual(self.run_cli("index", "--apply", "--date", "2026-10-08")[0], 0)
+        self.assertEqual(before, self.snapshot())
+
+    def test_missing_style_preserves_legacy_indexes_then_explicitly_switches(self):
+        self.init("--link-style", "wiki")
+        history = self.add_page("日志/人工 记录.md", "log", "archived",
+                                body="旧记录保留 [[当前状态/当前状态.md]]。")
+        entry = self.root / memory.ENTRY
+        config = self.root / ".memory.json"
+        data = json.loads(memory.read_text(config))
+        self.assertEqual(data.pop("link_style"), "wiki")
+        config.write_text(json.dumps(data), encoding="utf-8")
+        self.assertEqual(self.run_cli("index", "--apply")[0], 0)
+        before = self.snapshot()
+        self.assertEqual(self.run_cli("index", "--apply")[0], 0)
+        self.assertEqual(before, self.snapshot())
+        self.assertIn("[[当前状态/当前状态.md|当前状态]]", memory.read_text(entry))
+        self.assertIn("%E4%BA%BA%E5%B7%A5%20", memory.read_text(self.root / memory.LOG_INDEX))
+
+        text = memory.read_text(entry).replace("\r\n", "\n").replace("\n", "\r\n")
+        text += "保留手写 [[当前状态/当前状态.md]]。\r\n"
+        entry.write_bytes(text.encode("utf-8"))
+        history_before = history.read_bytes()
+        data["link_style"] = "markdown"
+        config.write_text(json.dumps(data), encoding="utf-8")
+        self.assertEqual(self.run_cli("index", "--apply")[0], 0)
+        migrated = memory.read_text(entry)
+        self.assertIn("[当前状态](当前状态/当前状态.md)", migrated)
+        self.assertNotIn("\n", migrated.replace("\r\n", ""))
+        self.assertEqual(text.split(memory.AUTO_START)[0], migrated.split(memory.AUTO_START)[0])
+        self.assertEqual(text.split(memory.AUTO_END)[1], migrated.split(memory.AUTO_END)[1])
+        self.assertEqual(history_before, history.read_bytes())
+        self.assertEqual(self.check()[1]["errors"], [])
+
+    def test_invalid_link_style_fails_before_index_writes(self):
+        self.init()
+        config = self.root / ".memory.json"
+        data = json.loads(memory.read_text(config))
+        data["link_style"] = ["markdown"]
+        config.write_text(json.dumps(data), encoding="utf-8")
+        before = self.snapshot()
+        code, report = self.check()
+        self.assertEqual(code, 1)
+        self.assertIn(".memory.json: link_style must be markdown or wiki", report["errors"])
+        code, _, error = self.run_cli("index", "--apply")
+        self.assertEqual(code, 2)
+        self.assertIn("link_style must be markdown or wiki", error)
+        self.assertEqual(before, self.snapshot())
+
+    def test_markdown_links_escape_table_syntax_and_nonportable_paths(self):
+        title = "配置 \\ [旧] | `标题`"
+        source = memory.LOG_INDEX
+        relative = "日志/配置%23.md"
+        if sys.platform != "win32":
+            relative = "日志/配置 \\?|.md"
+        target = self.add_page(relative, "log", "archived")
+        rendered = memory.render_memory_link(Path(relative), title, source, "markdown")
+        self.assertNotIn("`", rendered)
+        self.assertNotIn("|", rendered.replace("\\|", ""))
+        [(kind, raw)] = memory.links(rendered)
+        if sys.platform != "win32":
+            self.assertIn("%5C%3F%7C", raw)
+        else:
+            self.assertIn("%2523", raw)
+        page = memory.parse_page(source, "# 工作日志\n")
+        self.assertEqual(memory.resolve_target(kind, raw, page, self.project, self.root, []), target)
 
     def test_uppercase_markdown_extension_indexes_without_false_concurrency(self):
         self.init()
@@ -1271,6 +1526,391 @@ class MemoryTests(unittest.TestCase):
         self.assertTrue(report["blockers"])
         self.assertTrue(any("ambiguous wiki link" in r["reason"] for r in report["unresolved_references"]))
         self.assertEqual(before, self.snapshot())
+
+
+    def git(self, *args, project=None):
+        if not shutil.which("git"):
+            self.skipTest("Git is not installed")
+        env = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
+        env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+        result = subprocess.run(
+            ["git", "--no-optional-locks", "-c", "core.autocrlf=false", *args],
+            cwd=project or self.project, env=env, capture_output=True, text=True, encoding="utf-8", check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    def git_init(self):
+        self.git("init", "-q")
+        self.git("config", "user.name", "Wiki Memory Test")
+        self.git("config", "user.email", "test@example.invalid")
+
+    def git_commit(self, message):
+        self.git("add", "-A")
+        self.git("commit", "-qm", message)
+        return self.git("rev-parse", "HEAD").strip()
+
+    def analysis(self, *args):
+        code, output, error = self.run_cli(*args)
+        self.assertIn(code, (0, 1), error)
+        report = json.loads(output)
+        self.assertTrue(report["read_only"])
+        return code, report
+
+    def test_read_only_commands_preserve_project_and_git_bytes(self):
+        self.git_init()
+        source = self.project / "config.py"
+        source.write_bytes(b"VALUE = 1\n")
+        self.git_commit("before initialization")
+
+        def unchanged(*args):
+            status = self.git("status", "--porcelain=v1", "-z")
+            before = self.snapshot()
+            code, output, error = self.run_cli(*args)
+            self.assertEqual(code, 0, error or output)
+            self.assertEqual(self.git("status", "--porcelain=v1", "-z"), status)
+            self.assertEqual(self.snapshot(), before)
+            return json.loads(output)
+
+        self.assertFalse(unchanged("init")["apply"])
+        self.init()
+        self.git_commit("initialized memory")
+        source.write_bytes(b"VALUE = 2\n")
+        self.git("add", "config.py")
+        source.write_bytes(b"VALUE = 3\n")
+        (self.project / "untracked.txt").write_bytes(b"local note\n")
+        config = self.root / ".memory.json"
+        data = json.loads(memory.read_text(config))
+        data["link_style"] = "wiki"
+        config.write_text(json.dumps(data), encoding="utf-8")
+        self.assertTrue(unchanged("index")["files"])
+        unchanged("check")
+        unchanged("plan-migration")
+        unchanged("impact", "--base", "HEAD", "--include-worktree")
+        unchanged("tool-diff")
+
+    def test_impact_compares_diverged_branch_tips_without_switching(self):
+        self.init()
+        self.git_init()
+        source = self.project / "settings.py"
+        source.write_bytes(b"VALUE = 1\n")
+        base = self.git_commit("common base")
+        self.git("checkout", "-qb", "left")
+        source.write_bytes(b"VALUE = 2\n")
+        left = self.git_commit("left tip")
+        self.git("checkout", "-qb", "right", base)
+        source.write_bytes(b"VALUE = 3\n")
+        right = self.git_commit("right tip")
+        self.add_page("知识/settings.md", sources=["settings.py"])
+        source.write_bytes(b"VALUE = 4\n")
+        status = self.git("status", "--porcelain=v1", "-z")
+        before = self.snapshot()
+
+        code, report = self.analysis("impact", "--base", "left", "--head", "right")
+        self.assertEqual(code, 0, report)
+        self.assertEqual((report["base"], report["head"]), (left, right))
+        self.assertEqual(report["included_scopes"], ["commit"])
+        self.assertEqual(report["affected_pages"][0]["page"], "知识/settings.md")
+        self.assertEqual(self.git("branch", "--show-current").strip(), "right")
+        self.assertEqual(self.git("status", "--porcelain=v1", "-z"), status)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_impact_commit_renames_deletes_source_directories_and_verified_revisions(self):
+        self.init()
+        self.git_init()
+        src = self.project / "src"
+        src.mkdir()
+        (src / "旧 文件.py").write_text("old\n", encoding="utf-8")
+        (src / "deleted.py").write_text("remove\n", encoding="utf-8")
+        (self.project / "-flag.py").write_text("before\n", encoding="utf-8")
+        base = self.git_commit("before")
+        (src / "旧 文件.py").rename(src / "新 文件.py")
+        (src / "deleted.py").unlink()
+        (self.project / "-flag.py").write_text("after\n", encoding="utf-8")
+        head = self.git_commit("after")
+        self.add_page("知识/old.md", sources=["src/旧 文件.py", "src/deleted.py"], topic="old",
+                      extra=f'\nverified: {self.today}\nverified_rev: "{base[:12]}"')
+        self.add_page("知识/new.md", sources=["[新路径](../../src/新%20文件.py)", "-flag.py"], topic="new",
+                      extra=f'\nverified: {self.today}\nverified_rev: "{head}"')
+        self.add_page("知识/folder.md", sources=["src"], topic="folder")
+        self.add_page("知识/historical.md", sources=["src"], topic="archived", status="archived")
+        self.add_page("知识/unresolved.md", sources=["src"], topic="unresolved",
+                      extra=f'\nverified: {self.today}\nverified_rev: "0000000"')
+        status = self.git("status", "--porcelain=v1", "-z")
+        before = self.snapshot()
+        args = ("impact", "--base", "HEAD~1", "--head", head)
+        code, report = self.analysis(*args)
+        self.assertEqual(code, 0, report)
+        self.assertEqual(report["status"], "complete")
+        self.assertEqual((report["base"], report["head"]), (base, head))
+        self.assertEqual(report["included_scopes"], ["commit"])
+        changes = {change["path"]: change for change in report["changed_sources"]}
+        self.assertEqual(changes["src/新 文件.py"]["previous_path"], "src/旧 文件.py")
+        self.assertEqual(changes["src/新 文件.py"]["change"], "renamed")
+        self.assertEqual(changes["src/deleted.py"]["change"], "deleted")
+        self.assertEqual(changes["-flag.py"]["change"], "modified")
+        pages = {row["page"]: row for row in report["affected_pages"]}
+        self.assertEqual(pages["知识/old.md"]["matched_sources"], ["src/deleted.py", "src/旧 文件.py"])
+        self.assertEqual(pages["知识/new.md"]["matched_sources"], ["-flag.py", "src/新 文件.py"])
+        self.assertEqual(pages["知识/folder.md"]["matched_sources"], ["src"])
+        self.assertNotIn("知识/historical.md", pages)
+        self.assertTrue(all(row["action"] == "review" and not row["confirmed_stale"] for row in pages.values()))
+        baselines = {row["page"]: row["status"] for row in report["page_baselines"]}
+        self.assertEqual(baselines, {"知识/folder.md": "missing", "知识/new.md": "differs_from_base",
+                                     "知识/old.md": "matches_base", "知识/unresolved.md": "unresolved"})
+        self.assertEqual(self.analysis(*args), (code, report))
+        code, other_head = self.analysis("impact", "--base", "HEAD", "--head", base, "--include-worktree")
+        self.assertEqual((code, other_head["status"]), (1, "incomplete"))
+        self.assertEqual(other_head["included_scopes"], ["commit"])
+        self.assertIn("worktree_requires_current_head", other_head["limitations"])
+        self.assertEqual(self.git("status", "--porcelain=v1", "-z"), status)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_impact_worktree_includes_netcancel_staged_unstaged_and_untracked(self):
+        self.init()
+        self.git_init()
+        tracked = self.project / "tracked.py"
+        tracked.write_bytes(b"one\n")
+        (self.project / ".gitignore").write_text("ignored.py\n", encoding="utf-8")
+        self.git_commit("base")
+        tracked.write_bytes(b"two\n")
+        self.git("add", "tracked.py")
+        tracked.write_bytes(b"one\n")
+        for name in ("新的 文件.py", "ignored.py", ".private", "node_modules/cache.py", ".hidden/file.py"):
+            path = self.project / name
+            path.parent.mkdir(exist_ok=True)
+            path.write_bytes(b"untracked\n")
+        self.add_page("知识/tracked.md", sources=["tracked.py", "新的 文件.py"])
+        status = self.git("status", "--porcelain=v1", "-z")
+        before = self.snapshot()
+        _, clean = self.analysis("impact", "--base", "HEAD")
+        self.assertEqual(clean["changed_sources"], [])
+        self.assertFalse(clean["worktree_included"])
+        with mock.patch.dict(os.environ, {"GIT_DIR": "malicious/nonexistent", "GIT_WORK_TREE": "malicious/nonexistent"}):
+            code, report = self.analysis("impact", "--base", "HEAD", "--include-worktree")
+        self.assertEqual(code, 0, report)
+        self.assertTrue(report["worktree_included"])
+        self.assertEqual(report["included_scopes"], ["commit", "staged", "unstaged", "untracked"])
+        scopes = {(item["path"], item["scope"]) for item in report["changed_sources"]}
+        self.assertTrue({("tracked.py", "staged"), ("tracked.py", "unstaged"), ("新的 文件.py", "untracked")} <= scopes)
+        self.assertTrue({name for name, _ in scopes}.isdisjoint(
+            {"ignored.py", ".private", "node_modules/cache.py", ".hidden/file.py"}))
+        self.assertEqual(self.git("status", "--porcelain=v1", "-z"), status)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_impact_handles_git_errors_invalid_revision_and_nonroot_scope(self):
+        self.init()
+        code, report = self.analysis("impact", "--base", "HEAD")
+        self.assertEqual((code, report["status"]), (1, "unavailable"))
+        self.git_init()
+        self.git_commit("base")
+        before = self.snapshot()
+        for revision, reason in (("-C", "unsupported_revision"), ("HEAD:AGENTS.md", "unsupported_revision"),
+                                 ("HEAD..HEAD", "unsupported_revision"), ("x" * 257, "unsupported_revision"),
+                                 ("does-not-exist", "base_revision_unresolved")):
+            with self.subTest(revision=revision):
+                code, report = self.analysis("impact", f"--base={revision}")
+                self.assertEqual((code, report["status"]), (1, "unavailable"))
+                self.assertIn(reason, report["limitations"])
+        for exc, reason in ((FileNotFoundError, "git_not_found"), (PermissionError, "git_could_not_run")):
+            with mock.patch.object(memory.subprocess, "run", side_effect=exc):
+                self.assertIn(reason, self.analysis("impact", "--base", "HEAD")[1]["limitations"])
+        self.assertEqual(self.snapshot(), before)
+        self.project = self.project / "subproject"
+        self.project.mkdir()
+        code, report = self.analysis("impact", "--base", "HEAD")
+        self.assertEqual((code, report["status"]), (1, "unavailable"))
+        self.assertIn("not_a_git_worktree_root", report["limitations"])
+
+    def test_impact_does_not_run_a_diff_for_a_redirected_git_worktree(self):
+        self.init()
+        self.git_init()
+        self.git_commit("base")
+        with tempfile.TemporaryDirectory(prefix="wiki-memory-other-worktree-") as other:
+            self.git("config", "core.worktree", str(Path(other).resolve()))
+            before = self.snapshot()
+            code, report = self.analysis("impact", "--base", "HEAD")
+            self.assertEqual((code, report["status"]), (1, "unavailable"))
+            self.assertIn("project_must_be_git_worktree_root", report["limitations"])
+            self.assertEqual(self.snapshot(), before)
+
+    def test_impact_shallow_missing_history_reports_unavailable(self):
+        self.init()
+        self.git_init()
+        base = self.git_commit("base")
+        (self.project / "new.py").write_bytes(b"new\n")
+        self.git_commit("new")
+        clone = tempfile.TemporaryDirectory(prefix="wiki-memory-shallow-")
+        self.addCleanup(clone.cleanup)
+        self.git("clone", "-q", "--depth", "1", self.project.as_uri(), clone.name)
+        self.project = Path(clone.name).resolve()
+        self.assertEqual(self.git("rev-parse", "--is-shallow-repository").strip(), "true")
+        before = self.snapshot()
+        code, report = self.analysis("impact", "--base", base)
+        self.assertEqual((code, report["status"]), (1, "unavailable"))
+        self.assertIn("shallow_repository_history_may_be_missing", report["limitations"])
+        self.assertEqual(self.snapshot(), before)
+
+    def test_impact_and_tool_diff_reject_external_symlink_paths(self):
+        self.init()
+        self.git_init()
+        self.git_commit("base")
+        with tempfile.TemporaryDirectory(prefix="wiki-memory-external-test-") as outside:
+            external_file = Path(outside) / "outside.py"
+            external_file.write_text('VERSION = "1.2.3"\n', encoding="utf-8")
+            try:
+                (self.project / "jump").symlink_to(external_file.parent, target_is_directory=True)
+            except OSError:
+                self.skipTest("directory symlinks unavailable")
+            self.add_page("知识/link.md", sources=["jump/outside.py"])
+            real_open = os.open
+
+            def restricted_open(path, *args, **kwargs):
+                self.assertNotIn("jump", Path(path).parts)
+                return real_open(path, *args, **kwargs)
+
+            before = self.snapshot()
+            with mock.patch.object(memory.os, "open", restricted_open):
+                code, impact = self.analysis("impact", "--base", "HEAD")
+                self.assertEqual((code, impact["status"]), (1, "incomplete"))
+                self.assertEqual(impact["unassessable_pages"][0]["reasons"], ["symlink_or_reparse_point"])
+                code, diff = self.analysis("tool-diff", "--reference-tool", "jump/outside.py")
+                self.assertEqual((code, diff["status"]), (1, "not_comparable"))
+                self.assertEqual(diff["reference_tool"]["issue"], "symlink_or_reparse_point")
+            self.assertEqual(self.snapshot(), before)
+            self.assertEqual(external_file.read_text(encoding="utf-8"), 'VERSION = "1.2.3"\n')
+
+    def test_impact_reports_unsafe_sources_and_unreadable_pages_without_opening_them(self):
+        self.init()
+        self.git_init()
+        tracked = self.project / "tracked.py"
+        tracked.write_bytes(b"base\n")
+        self.git_commit("base")
+        tracked.write_bytes(b"after\n")
+        self.git_commit("after")
+        self.add_page("知识/untrusted.md", sources=["../outside", "/absolute", r"C:\outside", r"\\host\share",
+                                                   "https://example.invalid/source", "x" * 4097,
+                                                   "[malformed](../../%E4)", "missing.py", "permission.py"])
+        self.add_page("知识/good.md", sources=["tracked.py"], topic="good")
+        damaged = self.root / "知识" / "malformed.md"
+        damaged.write_bytes(b"\xff")
+        before = self.snapshot()
+        real_stat = Path.lstat
+
+        def restricted_stat(path):
+            if path.name == "permission.py":
+                raise PermissionError
+            self.assertTrue(path.is_relative_to(self.project), path)
+            return real_stat(path)
+
+        with mock.patch.object(Path, "lstat", restricted_stat):
+            code, report = self.analysis("impact", "--base", "HEAD~1")
+        self.assertEqual((code, report["status"]), (1, "incomplete"))
+        self.assertEqual([item["page"] for item in report["affected_pages"]], ["知识/good.md"])
+        reasons = {item["page"]: item["reasons"] for item in report["unassessable_pages"]}
+        self.assertEqual(reasons["知识/malformed.md"], ["unreadable_page"])
+        self.assertEqual(reasons["知识/untrusted.md"], ["invalid_source_encoding", "missing_source", "nonlocal_source",
+                                                        "unreadable_source", "unsafe_source_path"])
+        self.assertEqual(self.snapshot(), before)
+
+    def test_impact_skips_unstaged_diff_when_git_clean_filters_are_configured(self):
+        self.init()
+        self.git_init()
+        tracked = self.project / "tracked.py"
+        tracked.write_bytes(b"base\n")
+        (self.project / ".gitattributes").write_text("tracked.py filter=malicious\n", encoding="utf-8")
+        self.git_commit("base")
+        self.git("config", "filter.malicious.clean", "echo ran > filter-sentinel; cat")
+        tracked.write_bytes(b"changed\n")
+        before = self.snapshot()
+        code, report = self.analysis("impact", "--base", "HEAD", "--include-worktree")
+        self.assertEqual((code, report["status"]), (1, "incomplete"))
+        self.assertIn("unstaged_skipped_to_avoid_git_filters", report["limitations"])
+        self.assertEqual(report["included_scopes"], ["commit", "staged", "untracked"])
+        self.assertFalse((self.project / "filter-sentinel").exists())
+        self.assertEqual(self.snapshot(), before)
+
+    def test_verified_revision_check_is_syntactic_and_does_not_require_git(self):
+        self.init()
+        (self.project / "fact.txt").write_bytes(b"fact")
+        page = self.add_page("知识/verified.md", sources=["fact.txt"], extra=f"\nverified: {self.today}\nverified_rev: abc1234")
+        self.assertEqual(self.run_cli("index", "--apply")[0], 0)
+        before = self.snapshot()
+        with mock.patch.object(memory.subprocess, "run", side_effect=AssertionError("check must not call Git")):
+            self.assertEqual(self.check()[0], 0)
+        self.assertEqual(self.snapshot(), before)
+        page.write_text(page.read_text(encoding="utf-8").replace("verified_rev: abc1234", "verified_rev: HEAD"), encoding="utf-8")
+        code, report = self.check()
+        self.assertEqual(code, 1)
+        self.assertTrue(any("verified_rev" in error for error in report["errors"]))
+
+    def test_tool_diff_compares_raw_bytes_version_and_config_without_executing(self):
+        self.init()
+        local = self.root / "工具/memory.py"
+        before = self.snapshot()
+        code, same = self.analysis("tool-diff")
+        self.assertEqual((code, same["status"]), (0, "same"))
+        self.assertEqual(same["running_tool"]["version"], memory.VERSION)
+        self.assertEqual(same["project_tool"]["sha256"], hashlib.sha256(local.read_bytes()).hexdigest())
+        self.assertEqual(same["configuration"]["link_style"], "markdown")
+        self.assertEqual(self.snapshot(), before)
+        local.write_text(f'VERSION = "{memory.VERSION}"\nopen("side-effect", "w").write("executed")\n', encoding="utf-8")
+        config = self.root / ".memory.json"
+        data = json.loads(config.read_text(encoding="utf-8"))
+        data.update(tool_version="3.0.0")
+        data.pop("link_style")
+        config.write_text(json.dumps(data), encoding="utf-8")
+        before = self.snapshot()
+        code, custom = self.analysis("tool-diff")
+        self.assertEqual((code, custom["status"]), (0, "different"))
+        self.assertEqual(custom["project_tool"]["version"], memory.VERSION)
+        self.assertEqual(custom["configuration"]["tool_version_relation"], "older")
+        self.assertEqual(custom["configuration"]["link_style_compatibility"], "legacy_default")
+        self.assertFalse((self.project / "side-effect").exists())
+        self.assertEqual(self.snapshot(), before)
+        local.write_text('VERSION = "2.0.0"\n', encoding="utf-8")
+        self.assertEqual(self.analysis("tool-diff")[1]["project_tool"]["version"], "2.0.0")
+        local.write_text("# Legacy file has no version declaration\n", encoding="utf-8")
+        _, legacy = self.analysis("tool-diff")
+        self.assertEqual(legacy["status"], "different")
+        self.assertIsNone(legacy["project_tool"]["version"])
+
+    def test_tool_diff_unreadable_unsupported_and_oversized_reference(self):
+        self.init()
+        reference = self.project / "reference.py"
+        for content, issue in ((None, "missing_file"), (b"\xff", "invalid_utf8"),
+                               (b"#" * (memory.MAX_TOOL_BYTES + 1), "file_too_large")):
+            if content is not None:
+                reference.write_bytes(content)
+            before = self.snapshot()
+            code, report = self.analysis("tool-diff", "--reference-tool", "reference.py")
+            self.assertEqual((code, report["status"]), (1, "not_comparable"))
+            self.assertEqual(report["reference_tool"]["issue"], issue)
+            self.assertEqual(self.snapshot(), before)
+        code, report = self.analysis("tool-diff", "--reference-tool", "../unsafe.py")
+        self.assertEqual((code, report["issue"]), (1, "unsafe_reference_path"))
+
+    def test_tool_diff_standalone_requires_explicit_reference_and_rejects_self(self):
+        self.init()
+        local = self.root / "工具/memory.py"
+        before = self.snapshot()
+        for options, expected_code, expected_status in (
+            ([], 1, "not_comparable"),
+            (["--reference-tool", str(local)], 1, "not_comparable"),
+            (["--reference-tool", str(Path(memory.__file__).resolve())], 0, "same"),
+        ):
+            result = subprocess.run([sys.executable, "-B", str(local), "tool-diff", "--project", str(self.project), *options],
+                                    capture_output=True, text=True, encoding="utf-8", check=False)
+            self.assertEqual(result.returncode, expected_code, result.stderr)
+            self.assertEqual(json.loads(result.stdout)["status"], expected_status)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_new_read_only_commands_reject_apply(self):
+        before = self.snapshot()
+        self.assertEqual(self.run_cli("impact", "--base", "HEAD", "--apply")[0], 2)
+        self.assertEqual(self.run_cli("tool-diff", "--apply")[0], 2)
+        self.assertEqual(self.run_cli("impact")[0], 2)
+        self.assertEqual(self.snapshot(), before)
 
 
 if __name__ == "__main__":

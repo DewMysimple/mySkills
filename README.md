@@ -41,7 +41,16 @@
 
 标准版的真实目录与虚构日志示例见 [日志布局样例](wiki-memory/assets/standard-log-layout/)。[LLM Wiki 理论原文](wiki-memory/references/llm-wiki.md) 随 Skill 保留供按需查阅，来源与工程化边界见 [记忆模型](wiki-memory/references/memory-model.md)。
 
-3.2.1 将此 Skill 设为仅显式调用：已建记忆的日常开发、同步、检索和交接直接遵循项目协议，不反复加载 Skill。日常修改记忆后只运行一次普通检查；首次配置、迁移或明确完整验收才运行严格检查，通过即结束。已有正式接入检查、字符预算和只读 `plan-migration` 保留，warning 不作为日常交付门槛。[隔离换会话评测](wiki-memory/references/handoff-evaluation.md) 是维护者按相关改动使用的工具，不是每轮任务的收尾流程。
+3.4.0 保留 Schema 2。新 `init` 默认显式设置 `"link_style": "markdown"`。已有项目缺此字段时沿用 Wiki 导航和原 Markdown 日志表格；显式切换时编辑配置，预览 `index` 后再加 `--apply`。手写链接和历史正文保留。
+
+```text
+python -X utf8 wiki-memory/scripts/memory.py impact --project . --base <commit> --head HEAD
+python -X utf8 wiki-memory/scripts/memory.py tool-diff --project .
+```
+
+`impact` 按 Git 变更和页面来源列出复核候选。可选 `verified_rev` 记录整页核实基线，文件变更只提供复核线索。`tool-diff` 对比工具版本声明、指纹及配置兼容性；审查差异后按授权同步项目独立副本和协议，保留定制。[升级说明](wiki-memory/references/memory-model.md#升级独立工具与导航格式) · [隔离 A/B/C 评测](wiki-memory/references/handoff-evaluation.md)
+
+Skill 仍为显式调用。已接入项目的日常开发、检索和交接按项目协议进行；只读窄查询可按需定位，修改和接续保留完整启动读取。日常记忆修改后执行一次普通检查，初始化、结构迁移或明确完整验收时改用严格检查。两项专项只读命令均按需运行。
 
 ### 课堂转录 video-transcript-polisher
 
@@ -101,7 +110,7 @@ mySkills/
 
 ## 仓库工程记忆
 
-本仓库采用标准版工程记忆，从 [wiki_memory/README.md](wiki_memory/README.md) 开始，并遵守 [记忆维护协议](wiki_memory/AGENTS.md)。新会话读取项目概览、当前约束和当前待办，再按任务定位；同一上下文已读且未变的内容复用，架构、问题、决策和历史按需读取。
+本仓库采用标准版工程记忆。只读窄查询按协议定位相关来源；修改、接续或影响较大的任务先读项目概览、当前约束和当前待办。已读且未变的内容可复用。 [工程记忆导航](wiki_memory/README.md) · [记忆维护协议](wiki_memory/AGENTS.md)
 
 `wiki-memory/` 是可复用的能力包，`wiki_memory/` 保存本仓库的事实和交接信息，两者独立。完成有文件修改的任务时，按 [AGENTS.md](AGENTS.md) 同步记忆、验证、提交并推送。
 

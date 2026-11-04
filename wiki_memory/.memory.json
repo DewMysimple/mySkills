@@ -1,12 +1,13 @@
 {
   "schema_version": 2,
   "mode": "standard",
-  "tool_version": "3.2.1",
+  "tool_version": "3.4.0",
   "moc_defaults": {
     "kind": "process",
     "importance": "high"
   },
   "navigation": "README.md",
+  "link_style": "markdown",
   "read_budget": {
     "startup_chars": 16000,
     "page_chars": 6000,

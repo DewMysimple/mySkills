@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Project-local Markdown memory: preview/init, read-only check, marked index refresh.
+"""Project-local Markdown memory: initialize, check, index and review changes.
 
 Python 3.10+, standard library only. Mutations require --apply.
 """
@@ -7,17 +7,21 @@ Python 3.10+, standard library only. Mutations require --apply.
 from __future__ import annotations
 
 import argparse
+import ast
 import contextlib
+import hashlib
 import json
 import os
+import posixpath
 import re
 import stat
+import subprocess
 import sys
 import tempfile
 import uuid
 from dataclasses import dataclass
 from datetime import date
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from urllib.parse import quote, unquote
 
 AUTO_START = "<!-- wiki-memory:auto:start -->"
@@ -36,7 +40,8 @@ KINDS = set(LOG_CATEGORIES)
 ENTRY = Path("README.md")
 LEGACY_ENTRY = Path("入口.md")
 LOG_INDEX = Path("日志/MOC_工作日志.md")
-VERSION = "3.2.1"
+VERSION = "3.4.0"
+LINK_STYLES = ("markdown", "wiki")
 READ_BUDGET = {"startup_chars": 16000, "page_chars": 6000, "todo_items": 20}
 CATALOGS = {
     "state": (Path("当前状态/MOC_状态.md"), "历史状态目录"),
@@ -192,13 +197,44 @@ def within(path: Path, root: Path) -> bool:
     return path.resolve().is_relative_to(root.resolve())
 
 
+def linked_entry(info) -> bool:
+    return bool(stat.S_ISLNK(info.st_mode)
+                or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def read_scoped_bytes(path: Path, root: Path):
+    # Compare with the canonical boundary established by locations().
+    try:
+        inside = path.resolve().is_relative_to(root)
+    except RuntimeError:
+        inside = False
+    if not inside:
+        raise ValueError(f"read target escapes {root.name}: {path.name}")
+    if os.path.lexists(path) and not path.is_file():
+        raise ValueError(f"read target is not a regular file: {path.name}")
+    return observed_bytes(path)
+
+
+def read_memory_config(memory: Path):
+    return read_scoped_bytes(memory / ".memory.json", memory)
+
+
+def effective_root_instructions(project: Path):
+    override = project / "AGENTS.override.md"
+    raw = read_scoped_bytes(override, project)
+    if raw and raw.decode("utf-8").lstrip("\ufeff").strip():
+        return override, raw
+    agents = project / "AGENTS.md"
+    return agents, read_scoped_bytes(agents, project)
+
+
 def safe_write_target(path: Path, project: Path):
     if not within(path, project):
         raise ValueError(f"write target escapes project: {path}")
     cursor = path
     while cursor != project:
-        if cursor.is_symlink():
-            raise ValueError(f"refusing write through symlink: {cursor}")
+        if os.path.lexists(cursor) and linked_entry(cursor.lstat()):
+            raise ValueError(f"refusing write through symlink or reparse point: {cursor}")
         if cursor == cursor.parent:
             raise ValueError("invalid project boundary")
         cursor = cursor.parent
@@ -217,20 +253,58 @@ def locations(project_arg: str, memory_arg: str):
     return project, memory
 
 
+def scan_folder(name: str) -> bool:
+    return not name.startswith(".") and name.casefold() not in {
+        "node_modules", "vendor", "venv", "env", "dist", "build", "__pycache__",
+    }
+
+
+def memory_items(root: Path):
+    """Inventory memory files without descending through linked directories."""
+    def walk_error(exc):
+        raise exc
+
+    for directory, folders, files in os.walk(root, followlinks=False, onerror=walk_error):
+        parent = Path(directory)
+        descend = []
+        for name in sorted(folders):
+            if name.startswith("."):
+                continue
+            path = parent / name
+            info = path.lstat()
+            if not linked_entry(info):
+                descend.append(name)
+            yield path, info
+        folders[:] = descend
+        for name in sorted(files):
+            if not name.startswith(".") or name in {".memory.json", ".gitkeep"}:
+                path = parent / name
+                yield path, path.lstat()
+
+
 def page_paths(memory: Path) -> list[Path]:
     if not memory.is_dir():
         raise ValueError(f"memory directory does not exist: {memory}")
-    paths = [p for p in memory.iterdir() if p.is_file() and p.suffix.lower() == ".md"]
+    candidates = [path for path in memory.iterdir() if not path.name.startswith(".")]
     for folder in sorted(MANAGED):
         base = memory / folder
-        if base.is_symlink():
+        try:
+            info = base.lstat()
+        except FileNotFoundError:
+            continue
+        if linked_entry(info):
             raise ValueError(f"refusing symlinked memory section: {base}")
-        if base.is_dir():
-            paths.extend(p for p in base.rglob("*") if p.is_file() and p.suffix.lower() == ".md")
-    for path in sorted(set(paths)):
-        if not within(path, memory):
+        if stat.S_ISDIR(info.st_mode):
+            candidates.extend(path for path, _ in memory_items(base))
+    paths = []
+    for path in candidates:
+        if path.suffix.lower() != ".md":
+            continue
+        if not path.resolve().is_relative_to(memory):
             raise ValueError(f"memory page escapes memory directory: {path}")
-    return sorted(set(paths))
+        if path.is_file():
+            paths.append(path)
+    return sorted(paths)
 
 
 def load_pages(memory: Path) -> list[Page]:
@@ -335,17 +409,15 @@ def read_budget_config(data: dict):
     return {**READ_BUDGET, **overrides}
 
 
-def read_budget_report(project: Path, memory: Path, pages: list[Page], data: dict):
+def read_budget_report(project: Path, memory: Path, pages: list[Page], data: dict, *, instructions=None):
     limits = read_budget_config(data)
     mode = data.get("mode", "lite")
     titles = ["项目概览", "当前约束", "当前待办"] if mode == "standard" else ["当前状态"]
-    override = project / "AGENTS.override.md"
-    agents = override if override.exists() and read_text(override).lstrip("\ufeff").strip() else project / "AGENTS.md"
-    startup = [agents, memory / "AGENTS.md", memory / ENTRY]
-    startup.extend(memory / "当前状态" / (title + ".md") for title in titles)
+    agents, raw = effective_root_instructions(project) if instructions is None else instructions
+    startup = [Path("AGENTS.md"), ENTRY, *(Path("当前状态") / (title + ".md") for title in titles)]
     sizes = {p.path: len(p.original.decode("utf-8").lstrip("\ufeff")) for p in pages}
-    startup_sizes = {p.relative_to(project).as_posix(): len(read_text(p).lstrip("\ufeff"))
-                     for p in startup if p.is_file() and within(p, project)}
+    startup_sizes = {agents.relative_to(project).as_posix(): len(raw.decode("utf-8").lstrip("\ufeff"))} if raw is not None else {}
+    startup_sizes.update({(memory / p).relative_to(project).as_posix(): sizes[p] for p in startup if p in sizes})
     todo_title = "当前待办" if mode == "standard" else "当前状态"
     todo = next((p for p in pages if p.path == Path("当前状态") / (todo_title + ".md")), None)
     items = 0
@@ -373,13 +445,16 @@ def read_budget_report(project: Path, memory: Path, pages: list[Page], data: dic
 
 def project_markdown_paths(project: Path):
     """Reference inventory, excluding dependencies, build output and symlinks."""
-    excluded = {".git", "node_modules", "vendor", ".venv", "venv", "env", "dist", "build", "__pycache__", ".cache"}
     for directory, folders, files in os.walk(project, followlinks=False):
-        folders[:] = sorted(name for name in folders if name not in excluded
-                            and not name.startswith(".") and not (Path(directory) / name).is_symlink())
+        parent = Path(directory)
+        folders[:] = sorted(name for name in folders if scan_folder(name)
+                            and not linked_entry((parent / name).lstat()))
         for name in sorted(files):
-            path = Path(directory) / name
-            if path.suffix.lower() == ".md" and not path.is_symlink() and within(path, project):
+            path = parent / name
+            if name.startswith(".") or path.suffix.lower() != ".md":
+                continue
+            info = path.lstat()
+            if stat.S_ISREG(info.st_mode) and not linked_entry(info) and within(path, project):
                 yield path
 
 
@@ -388,13 +463,13 @@ def migration_plan(project: Path, memory: Path, mode: str | None):
     destination = project / "wiki_memory"
     safe_write_target(destination, project)
     pages = load_pages(memory)
-    config_path = memory / ".memory.json"
     blockers, observations = [], []
     try:
-        data = json.loads(read_text(config_path).lstrip("\ufeff")) if config_path.is_file() else {}
+        raw = read_memory_config(memory)
+        data = json.loads(raw.decode("utf-8-sig")) if raw is not None else {}
         if not isinstance(data, dict):
             raise ValueError("configuration must be an object")
-    except (ValueError, UnicodeError) as exc:
+    except (ValueError, OSError) as exc:
         data = {}
         blockers.append(f".memory.json: {exc}")
     current_mode = data.get("mode")
@@ -408,10 +483,10 @@ def migration_plan(project: Path, memory: Path, mode: str | None):
     if destination != memory and destination.exists():
         blockers.append("target wiki_memory already exists; reconcile competing roots before moving files")
     files = []
-    for path in sorted(memory.rglob("*")):
-        if path.is_symlink() or not within(path, memory):
+    for path, info in memory_items(memory):
+        if linked_entry(info) or not within(path, memory):
             blockers.append(f"refusing symlinked or escaping migration item: {path.relative_to(memory).as_posix()}")
-        elif path.is_file():
+        elif stat.S_ISREG(info.st_mode):
             files.append(path)
     mapping = {path.resolve(): destination / path.relative_to(memory) for path in files}
     by_path = {p.path: p for p in pages}
@@ -430,9 +505,9 @@ def migration_plan(project: Path, memory: Path, mode: str | None):
         mapping[(memory / page.path).resolve()] = destination / "日志" / LOG_CATEGORIES[kind] / Path(*tail)
     merges = []
     old_entry = memory / LEGACY_ENTRY
-    if old_entry.is_file():
+    if old_entry in files:
         sources = [old_entry]
-        if (memory / ENTRY).is_file():
+        if memory / ENTRY in files:
             sources.insert(0, memory / ENTRY)
         mapping[old_entry.resolve()] = destination / ENTRY
         merges.append({"sources": [p.relative_to(project).as_posix() for p in sources],
@@ -452,7 +527,9 @@ def migration_plan(project: Path, memory: Path, mode: str | None):
                               "sources": [p.relative_to(project).as_posix() for p in sources], "reason": "destination is occupied; never overwrite it"})
     references, unresolved = [], []
     scanned = 0
-    for path in project_markdown_paths(project):
+    reference_paths = set(project_markdown_paths(project))
+    reference_paths.update(memory / page.path for page in pages)
+    for path in sorted(reference_paths):
         scanned += 1
         source_path = path.resolve()
         page = by_path.get(path.relative_to(memory)) if within(path, memory) else None
@@ -541,7 +618,12 @@ def migration_plan(project: Path, memory: Path, mode: str | None):
 
 
 def resolve_target(kind, raw, source: Page, project: Path, memory: Path, pages: list[Page], require_exists=True):
-    target = raw.strip() if kind == "source" else unquote(raw.strip().split("#", 1)[0].split("?", 1)[0])
+    raw_path = raw.strip() if kind == "source" else raw.strip().split("#", 1)[0].split("?", 1)[0]
+    # Literal legacy separators are portable; an encoded backslash in a URL
+    # remains a filename character on systems that permit it.
+    target = raw_path.replace("\\", "/")
+    if kind != "source":
+        target = unquote(target, errors="strict")
     if not target:
         return None
     if target.startswith(("用户指令：", "用户确认：", "user:")):
@@ -550,7 +632,6 @@ def resolve_target(kind, raw, source: Page, project: Path, memory: Path, pages: 
         raise ValueError(f"machine-specific or absolute link: {raw}")
     if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", target):
         return None
-    target = target.replace("\\", "/")
     if kind == "wiki":
         rel = Path(target)
         path = memory / rel
@@ -595,6 +676,10 @@ def iso_date(value):
     if parsed.isoformat() != value:
         raise ValueError("expected YYYY-MM-DD")
     return parsed
+
+
+def is_verified_revision(value):
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F]{7,64}", value) is not None
 
 
 def supersession_errors(project, memory, pages):
@@ -673,7 +758,11 @@ def standard_log_issues(memory: Path, pages: list[Page]) -> list[str]:
     issues = []
     for folder in LOG_CATEGORIES.values():
         directory = memory / "日志" / folder
-        if not directory.is_dir() or directory.is_symlink() or not within(directory, memory):
+        try:
+            info = safe_path_stat(directory, memory)
+        except ValueError:
+            info = None
+        if info is None or not stat.S_ISDIR(info.st_mode):
             issues.append(f"日志/{folder}: required standard log directory missing, symlinked or escaping memory root; explicitly migrate the log layout")
     for page in pages:
         if page.fields.get("type") != "log":
@@ -725,6 +814,8 @@ def inspect(project: Path, memory: Path, pages: list[Page], today: date, stale_d
                     warnings.append(f"{page.rel}: old {label} date; review relevant sources")
             except ValueError:
                 errors.append(f"{page.rel}: invalid updated/verified date")
+            if "verified_rev" in f and (not is_verified_revision(f["verified_rev"]) or "verified" not in f):
+                errors.append(f"{page.rel}: verified_rev requires verified and a 7–64 digit hexadecimal commit ID")
             for field in ("sources", "source_logs"):
                 value = f.get(field, [])
                 if not isinstance(value, list) or not all(isinstance(x, str) and x.strip() for x in value):
@@ -787,12 +878,22 @@ def inspect(project: Path, memory: Path, pages: list[Page], today: date, stale_d
             warnings.append(f"{page.rel}: unreachable from memory entry")
     config = memory / ".memory.json"
     if config_bytes is _UNREAD:
-        config_bytes = observed_bytes(config)
+        try:
+            config_bytes = read_memory_config(memory)
+        except (ValueError, OSError) as exc:
+            errors.append(f".memory.json: {exc}")
+            return sorted(set(errors)), sorted(set(warnings))
     entry = ENTRY
     if memory != project / "wiki_memory":
         message = "legacy memory location; migrate to <project>/wiki_memory before delivery or index writes"
         (errors if require_ready else warnings).append(message)
     if config_bytes is not None:
+        try:
+            instructions = effective_root_instructions(project)
+            instruction_text = (instructions[1] or b"").decode("utf-8")
+        except (ValueError, OSError) as exc:
+            errors.append(f"root instructions: {exc}")
+            instructions = None
         try:
             if not within(config, memory):
                 raise ValueError("configuration escapes memory directory")
@@ -808,6 +909,7 @@ def inspect(project: Path, memory: Path, pages: list[Page], today: date, stale_d
                 raise ValueError("schema_version 2 requires navigation: README.md")
             elif any(p.path == LEGACY_ENTRY for p in pages):
                 errors.append("legacy 入口.md remains; merge its navigation into README.md and repair references before indexing")
+            memory_link_style(data)
             if data.get("tool_version") not in {None, VERSION}:
                 warnings.append(f"project tool version {data.get('tool_version')} differs from running version {VERSION}; review before upgrading")
             if data["mode"] == "standard":
@@ -821,8 +923,8 @@ def inspect(project: Path, memory: Path, pages: list[Page], today: date, stale_d
                     or any(not isinstance(v, str) or not v.strip() for v in defaults.values())):
                 raise ValueError("moc_defaults supports only nonempty kind/importance strings")
             read_budget_config(data)
-            if not metadata_only:
-                warnings.extend(read_budget_report(project, memory, pages, data)["warnings"])
+            if not metadata_only and instructions is not None:
+                warnings.extend(read_budget_report(project, memory, pages, data, instructions=instructions)["warnings"])
             by_path = {p.path: p for p in pages}
             for path in (entry, LOG_INDEX, *(item[0] for item in CATALOGS.values())):
                 page = by_path.get(path)
@@ -845,15 +947,13 @@ def inspect(project: Path, memory: Path, pages: list[Page], today: date, stale_d
                     (errors if require_ready else warnings).extend(state_readiness(by_path[path], title))
         except (ValueError, TypeError) as exc:
             errors.append(f".memory.json: {exc}")
-        override = project / "AGENTS.override.md"
-        agents = override if override.exists() and read_text(override).lstrip("\ufeff").strip() else project / "AGENTS.md"
-        rel = memory.relative_to(project).as_posix()
-        text = read_text(agents) if agents.exists() else ""
-        hook = memory_hook_status(text, rel, entry)
-        if hook not in {"managed", "legacy"}:
-            (errors if require_ready else warnings).append("effective root instructions lack memory hook; verify session discovery")
-        elif hook == "legacy":
-            warnings.append("effective root instructions use an unmarked legacy memory hook; manually verify affirmative reading instructions and nested overrides")
+        if instructions is not None:
+            rel = memory.relative_to(project).as_posix()
+            hook = memory_hook_status(instruction_text, rel, entry)
+            if hook not in {"managed", "legacy"}:
+                (errors if require_ready else warnings).append("effective root instructions lack memory hook; verify session discovery")
+            elif hook == "legacy":
+                warnings.append("effective root instructions use an unmarked legacy memory hook; manually verify affirmative reading instructions and nested overrides")
     elif require_ready:
         errors.append("configuration missing; --require-ready requires schema_version 2 and README.md navigation")
     return sorted(set(errors)), sorted(set(warnings))
@@ -865,27 +965,43 @@ def make_page(page_type, status, topic, title, body, today, *, extra_fields=None
             f"topic: {topic}\n{extra}sources: []\n---\n\n# {title}\n\n{body.rstrip()}\n")
 
 
-def wiki(page: Page):
-    title = page.title.replace("|", "\\|").replace("[", "").replace("]", "")
-    # Escape syntax characters once, while keeping Chinese names readable.
-    target = "".join(quote(char, safe="") if char in "%#?[]|" else char for char in page.rel)
-    return f"[[{target}|{title}]]"
+def memory_link_style(data: dict) -> str:
+    style = data.get("link_style", "wiki")
+    if style not in LINK_STYLES:
+        raise ValueError("link_style must be markdown or wiki")
+    return style
 
 
-def log_table_link(page: Page):
-    title = page.title.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]").replace("|", "\\|")
-    relative = Path(os.path.relpath(page.path, LOG_INDEX.parent)).as_posix()
-    return f"[{title}]({quote(relative, safe='/')})"
+def render_memory_link(target: Path, title: str, source: Path, style: str, *, legacy_log=False):
+    if style == "wiki" and not legacy_log:
+        title = title.replace("|", "\\|").replace("[", "").replace("]", "")
+        path = "".join(quote(char, safe="") if char in "%#?[]|\\" else char for char in target.as_posix())
+        return f"[[{path}|{title}]]"
+    relative = Path(os.path.relpath(target, source.parent)).as_posix()
+    if legacy_log:
+        # The old Wiki index already used Markdown in its log table. Preserve
+        # its byte format when link_style is missing or explicitly wiki.
+        path = quote(relative, safe="/")
+        title = title.translate(str.maketrans({char: "\\" + char for char in "\\[]|"}))
+    else:
+        if relative.startswith("\\") or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", relative):
+            relative = "./" + relative
+        path = "".join(char if char.isalnum() else quote(char, safe="/") for char in relative)
+        title = title.translate(str.maketrans({
+            **{char: "\\" + char for char in "\\[]|*_~&<>"},
+            "`": "&#96;",
+        }))
+    return f"[{title}]({path})"
 
 
-def index_contents(pages: list[Page]):
+def index_contents(pages: list[Page], link_style="wiki"):
     entry, catalogs = ["## 当前状态", ""], {}
     existing = {p.path for p in pages}
     for page_type, (catalog_path, label) in CATALOGS.items():
         selected = sorted((p for p in pages if p.fields.get("type") == page_type), key=lambda p: (p.fields.get("status") != "active", p.rel))
         if page_type == "state":
             current = [p for p in selected if p.fields.get("status") in {"active", "proposed"}]
-            entry.extend(f"- {wiki(p)} — {p.fields.get('status', '?')}" for p in current)
+            entry.extend(f"- {render_memory_link(p.path, p.title, ENTRY, link_style)} — {p.fields.get('status', '?')}" for p in current)
             if not current:
                 entry.append("- 尚无当前状态，先核实项目事实。")
             entry.append("")
@@ -896,16 +1012,17 @@ def index_contents(pages: list[Page]):
                 group = [p for p in selected if p.fields.get("status") in statuses]
                 if group:
                     lines.extend([f"## {heading}", ""])
-                    lines.extend(f"- {wiki(p)} — {p.fields.get('status', '?')} · {p.fields.get('topic', '?')}" for p in group)
+                    lines.extend(f"- {render_memory_link(p.path, p.title, catalog_path, link_style)} — {p.fields.get('status', '?')} · {p.fields.get('topic', '?')}" for p in group)
                     lines.append("")
             catalogs[catalog_path] = "\n".join(lines).rstrip() or "暂无页面。"
-            entry.append(f"- [[{catalog_path.as_posix()}|{label}]] — {len(selected)} 页，按主题或模块检索。")
+            entry.append(f"- {render_memory_link(catalog_path, label, ENTRY, link_style)} — {len(selected)} 页，按主题或模块检索。")
     entry.append("")
     logs = ["| 日期 | 类型 | 任务结果 | 日志 |", "| --- | --- | --- | --- |"]
     selected = sorted((p for p in pages if p.fields.get("type") == "log"), key=lambda p: (str(p.fields.get("updated", "")), p.rel), reverse=True)
     for p in selected:
         cells = [str(p.fields.get(k, "未记录")).replace("|", "\\|") for k in ("updated", "kind", "task_status")]
-        logs.append("| " + " | ".join(cells + [log_table_link(p)]) + " |")
+        link = render_memory_link(p.path, p.title, LOG_INDEX, link_style, legacy_log=link_style == "wiki")
+        logs.append("| " + " | ".join(cells + [link]) + " |")
     if not selected:
         logs.append("| - | - | - | 暂无记录 |")
     return {ENTRY: "\n".join(entry).rstrip(), LOG_INDEX: "\n".join(logs), **catalogs}
@@ -917,7 +1034,9 @@ def replace_auto(text: str, generated: str, path: Path):
     start, end = text.index(AUTO_START) + len(AUTO_START), text.index(AUTO_END)
     if start > end:
         raise ValueError(f"{path}: invalid auto marker order")
-    return text[:start] + "\n\n" + generated + "\n\n" + text[end:]
+    newline = "\r\n" if text[start:end].startswith("\r\n") else "\n"
+    region = "\n\n" + generated + "\n\n"
+    return text[:start] + region.replace("\n", newline) + text[end:]
 
 
 def refresh_index(text: str, generated: str, path: Path, today: date):
@@ -940,15 +1059,14 @@ def refresh_index(text: str, generated: str, path: Path, today: date):
     return "".join(lines)
 
 
-def initialize(project: Path, memory: Path, mode: str, today: date):
+def initialize(project: Path, memory: Path, mode: str, today: date, link_style="markdown"):
     if memory != project / "wiki_memory":
         raise ValueError("new memory must be <project>/wiki_memory; nested/custom memory-dir is only accepted by read-only check for migration")
     if memory.exists():
         raise ValueError("memory directory already exists; inspect/migrate it without init")
-    override = project / "AGENTS.override.md"
-    agents = override if override.exists() and read_text(override).lstrip("\ufeff").strip() else project / "AGENTS.md"
+    agents, raw = effective_root_instructions(project)
     safe_write_target(agents, project)
-    previous = agents.read_bytes() if agents.exists() else b""
+    previous = raw or b""
     try:
         instruction_text = previous.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -967,7 +1085,7 @@ def initialize(project: Path, memory: Path, mode: str, today: date):
     for title in STATE_TITLES[mode]:
         body = summary + "\n\n".join(f"## {section}\n\n- {STATE_PROMPTS[section]}" for section in STATE_SECTIONS[title])
         plan[memory / "当前状态" / f"{title}.md"] = make_page("state", "proposed", STATE_TOPICS[title], title, body, today).encode("utf-8")
-    entry_body = (f"初始布局：`{mode}`（当前布局以 `.memory.json` 为准）。先读当前状态，按任务定位决策、知识与历史。\n\n"
+    entry_body = (f"初始布局：`{mode}`（当前布局以 `.memory.json` 为准）。按项目协议选择读取路径，按需定位当前状态、决策、知识与历史。\n\n"
                   "日常开发直接遵循项目内协议，不调用 wiki-memory Skill；仅用户明确要求记忆管理时使用 Skill。\n\n"
                   "- [记忆维护协议](AGENTS.md)\n- [工作日志 MOC](日志/MOC_工作日志.md)\n\n"
                   f"{AUTO_START}\n\n{AUTO_END}\n")
@@ -977,14 +1095,16 @@ def initialize(project: Path, memory: Path, mode: str, today: date):
         for folder in LOG_CATEGORIES.values():
             plan[memory / "日志" / folder / ".gitkeep"] = b""
     pages = [parse_page(p.relative_to(memory), data.decode("utf-8")) for p, data in plan.items() if p.suffix == ".md"]
-    for path, generated in index_contents(pages).items():
+    for path, generated in index_contents(pages, link_style).items():
         target = memory / path
         plan[target] = replace_auto(plan[target].decode("utf-8"), generated, path).encode("utf-8")
-    plan[memory / ".memory.json"] = (json.dumps({"schema_version": 2, "mode": mode, "tool_version": VERSION, "navigation": ENTRY.as_posix(), "read_budget": READ_BUDGET}, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    config = {"schema_version": 2, "mode": mode, "tool_version": VERSION, "navigation": ENTRY.as_posix(),
+              "link_style": link_style, "read_budget": READ_BUDGET}
+    plan[memory / ".memory.json"] = (json.dumps(config, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     plan[memory / "工具/memory.py"] = Path(__file__).read_bytes()
     newline = "\r\n" if b"\r\n" in previous else "\n"
     block = (f"{HOOK_START}\n## 工程记忆\n\n"
-             f"本项目使用工程根目录下的 `{rel}/`。新会话读取 `{rel}/AGENTS.md` 和 `{rel}/README.md`，按协议读取当前状态与全局约束，再定位相关决策和模块知识；当前上下文已读且未变化的内容不重复加载。\n"
+             f"本项目使用工程根目录下的 `{rel}/`。新会话读取 `{rel}/AGENTS.md` 和 `{rel}/README.md`。按协议区分只读窄查询与修改、接续等任务，后者先读取规定的当前状态与全局约束。已读且未变的内容可复用。\n"
              "在已授权开发任务完成或中断时，按协议同步有证据的状态、验证和恢复下一步；只读任务遵守只读范围。\n"
              "日常读取、同步和交接直接遵循项目协议，不调用 wiki-memory Skill。仅用户明确要求配置、迁移、体检等记忆管理时加载 Skill；检查频率按项目协议，不把完整验收用于每轮收尾。\n"
              f"{HOOK_END}\n").replace("\n", newline).encode("utf-8")
@@ -1041,7 +1161,8 @@ def atomic_write(path: Path, data: bytes, *, create=False):
 
 
 def apply_plan(plan: dict[Path, bytes], project: Path, apply: bool, append_target: Path | None = None,
-               expected: bytes = b"", *, snapshots=None, page_root=None, new_root=None, required_dirs=()):
+               expected: bytes = b"", *, snapshots=None, page_root=None, new_root=None, required_dirs=(),
+               init_options=None):
     baseline = dict(snapshots or {})
     for path in plan:
         safe_write_target(path, project)
@@ -1070,7 +1191,15 @@ def apply_plan(plan: dict[Path, bytes], project: Path, apply: bool, append_targe
     verify()
     if new_root is not None and os.path.lexists(new_root):
         raise ValueError("memory directory appeared after planning; inspect without init")
-    print(json.dumps({"apply": apply, "files": [p.relative_to(project).as_posix() for p in plan]}, ensure_ascii=False, indent=2))
+    files = [p.relative_to(project).as_posix() for p in plan]
+    report = {"apply": apply, "files": files}
+    if init_options is not None:
+        report.update(init_options)
+        report["changes"] = [{"path": rel, "action": "create" if baseline[path] is None else "append"}
+                             for path, rel in zip(plan, files)]
+        report["blockers"] = (["existing .wiki-memory.lock; inspect its owner before applying"]
+                              if os.path.lexists(project / ".wiki-memory.lock") else [])
+    print(json.dumps(report, ensure_ascii=False, indent=2))
     if not apply:
         return
     created_dirs, written = [], []
@@ -1128,36 +1257,467 @@ def apply_plan(plan: dict[Path, bytes], project: Path, apply: bool, append_targe
             raise
 
 
+def safe_path_stat(path: Path, boundary: Path):
+    """Inspect path components without following symlinks or Windows reparse points."""
+    current = boundary
+    info = None
+    for part in path.relative_to(boundary).parts:
+        current /= part
+        try:
+            info = current.lstat()
+        except (FileNotFoundError, NotADirectoryError):
+            return None
+        if linked_entry(info):
+            raise ValueError("symlink_or_reparse_point")
+    return info
+
+
+def local_source_path(project, raw):
+    """Accept a normalized Git-relative pathname without opening its contents."""
+    if (not raw or len(raw) > 4096 or re.search(r"[\x00-\x1f\x7f\ud800-\udfff]", raw)
+            or any(part in {"", ".", ".."} or ":" in part for part in raw.split("/"))):
+        raise ValueError("unsafe_path")
+    if os.name == "nt" and any(
+        re.search(r'[\\*?"<>|]', part) or part.endswith((" ", "."))
+        or (os.path.isreserved(part) if hasattr(os.path, "isreserved") else PureWindowsPath(part).is_reserved())
+        for part in raw.split("/")
+    ):
+        raise ValueError("unsupported_windows_path")
+    return project.joinpath(*raw.split("/"))
+
+
+class GitReadError(ValueError):
+    pass
+
+
+def git_read(project, *args, allowed=(0,)):
+    # Ambient repository/config overrides can silently redirect a Git invocation.
+    env = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
+    env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_OPTIONAL_LOCKS="0",
+               GIT_NO_LAZY_FETCH="1", GIT_ALLOW_PROTOCOL="", GIT_TERMINAL_PROMPT="0")
+    command = ["git", "--no-optional-locks", "--no-replace-objects", "-c", "core.fsmonitor=false",
+               "-c", f"core.attributesFile={os.devnull}", "-c", f"core.excludesFile={os.devnull}", *args]
+    try:
+        result = subprocess.run(command, cwd=project, env=env, capture_output=True, timeout=30, shell=False)
+    except FileNotFoundError as exc:
+        raise GitReadError("git_not_found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise GitReadError("git_timeout") from exc
+    except OSError as exc:
+        raise GitReadError("git_could_not_run") from exc
+    if result.returncode not in allowed:
+        # Avoid returning Git diagnostics that can contain untrusted names/configuration.
+        raise GitReadError(f"git_{args[0]}_failed")
+    return result
+
+
+def git_revision(project, revision):
+    if (not isinstance(revision, str) or not 1 <= len(revision) <= 256
+            or revision.startswith("-") or ".." in revision
+            or re.fullmatch(r"[\w./@~^+{}-]+", revision) is None):
+        raise GitReadError("unsupported_revision")
+    result = git_read(project, "rev-parse", "--verify", "--end-of-options", f"{revision}^{{commit}}", allowed=(0, 128))
+    commit = result.stdout.strip()
+    if result.returncode or re.fullmatch(rb"(?:[0-9a-f]{40}|[0-9a-f]{64})", commit) is None:
+        return None
+    return commit.decode("ascii")
+
+
+def git_changes(raw, scope):
+    """Decode NUL-delimited name-status records, including both rename endpoints."""
+    values = raw.decode("utf-8", errors="surrogateescape").split("\x00")
+    if values.pop():
+        raise GitReadError("unterminated_git_path_list")
+    if scope == "untracked":
+        return [{"path": path, "previous_path": None, "change": "untracked", "scope": scope} for path in values]
+    changes, position = [], 0
+    kinds = {"A": "added", "M": "modified", "D": "deleted", "R": "renamed", "C": "copied",
+             "T": "type_changed", "U": "unmerged", "X": "unknown", "B": "broken_pair"}
+    while position < len(values):
+        code = values[position]
+        if re.fullmatch(r"(?:[ADTUXB]|[MRC][0-9]{0,3})", code) is None:
+            raise GitReadError("unsupported_git_change_record")
+        paired = code[0] in "RC"
+        end = position + (3 if paired else 2)
+        if end > len(values):
+            raise GitReadError("truncated_git_change_record")
+        changes.append({"path": values[end - 1], "previous_path": values[end - 2] if paired else None,
+                        "change": kinds[code[0]], "scope": scope})
+        position = end
+    return changes
+
+
+DIFF_OPTIONS = ("--no-ext-diff", "--no-textconv", "--no-relative", "--ignore-submodules=dirty",
+                "-O", os.devnull, "--name-status", "--find-renames", "-z")
+UNTRACKED_EXCLUDES = (".*", "node_modules/", "vendor/", "venv/", "env/", "dist/", "build/", "__pycache__/")
+
+
+def impact_source_options(raw, kind, page, memory, project, page_names):
+    if len(raw) > 4096:
+        raise ValueError("unsafe_source_path")
+    target = raw.strip().replace("\\", "/")
+    if kind != "source":
+        target = unquote(target.split("#", 1)[0].split("?", 1)[0], errors="strict")
+    if target.startswith(("用户指令：", "用户确认：", "user:")):
+        raise ValueError("nonlocal_source")
+    if target.startswith(("/", "\\", "file:")) or re.match(r"^[A-Za-z]:", target):
+        raise ValueError("unsafe_source_path")
+    if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", target):
+        raise ValueError("nonlocal_source")
+    if not target or kind == "source" and ".." in target.split("/"):
+        raise ValueError("unsafe_source_path")
+    directory = memory.relative_to(project).as_posix()
+    if kind == "markdown":
+        directory = posixpath.join(directory, page.path.parent.as_posix())
+    relative = posixpath.normpath(target if kind == "source" else posixpath.join(directory, target))
+    if kind != "wiki":
+        return [relative]
+    preferred = [relative]
+    if not relative.lower().endswith(".md"):
+        preferred.append(relative + ".md")
+    if "/" not in target:
+        matches = sorted({name for suffix in preferred for name in page_names.get(posixpath.basename(suffix), ())
+                          if name not in preferred})
+        if len(matches) > 1:
+            return preferred + [None]
+        preferred.extend(matches)
+    return preferred
+
+
+def impact_baseline(project, page, base, cache):
+    revision = page.fields.get("verified_rev")
+    if "verified_rev" not in page.fields:
+        return {"page": page.rel, "verified_rev": None, "resolved": None, "status": "missing"}
+    try:
+        iso_date(page.fields.get("verified"))
+        if not is_verified_revision(revision):
+            raise ValueError
+    except ValueError:
+        return {"page": page.rel, "verified_rev": None, "resolved": None, "status": "invalid"}
+    if revision not in cache:
+        try:
+            cache[revision] = git_revision(project, revision)
+        except GitReadError:
+            cache[revision] = None
+    resolved = cache[revision]
+    status = "unresolved" if resolved is None else "matches_base" if resolved == base else "differs_from_base"
+    return {"page": page.rel, "verified_rev": revision, "resolved": resolved, "status": status}
+
+
+def map_impact_sources(project, memory, report):
+    try:
+        paths = page_paths(memory)
+    except (OSError, ValueError):
+        report["limitations"].append("memory_inventory_unavailable")
+        return
+    if not paths:
+        report["limitations"].append("memory_has_no_pages")
+    page_names, changes_by_source, changes_below = {}, {}, {}
+    for path in paths:
+        page_names.setdefault(path.name, []).append(path.relative_to(project).as_posix())
+    for change in report["changed_sources"]:
+        for path in {change["path"], change["previous_path"]} - {None}:
+            changes_by_source.setdefault(os.path.normcase(path), []).append(change)
+            parent = posixpath.dirname(path)
+            while parent:
+                changes_below.setdefault(os.path.normcase(parent), []).append(change)
+                parent = posixpath.dirname(parent)
+    baseline_cache = {}
+    for path in paths:
+        relative = path.relative_to(memory)
+        if relative.parts[0] == "日志":
+            continue
+        try:
+            page = parse_page(relative, bounded_read(path, memory).decode("utf-8"))
+        except (OSError, ValueError):
+            report["unassessable_pages"].append({"page": relative.as_posix(), "reasons": ["unreadable_page"]})
+            continue
+        if page.errors:
+            report["unassessable_pages"].append({"page": page.rel, "reasons": ["invalid_frontmatter"]})
+            continue
+        if page.fields.get("status") != "active" or page.fields.get("type") not in ("state", "knowledge", "decision"):
+            continue
+        report["page_baselines"].append(impact_baseline(project, page, report["base"], baseline_cache))
+        sources = page.fields.get("sources")
+        if not isinstance(sources, list) or not sources:
+            report["unassessable_pages"].append({"page": page.rel, "reasons": ["no_local_sources"]})
+            continue
+        matches, reasons = {}, set()
+        for value in sources:
+            if not isinstance(value, str) or len(value) > 4096:
+                reasons.add("unsafe_source_path")
+                continue
+            for kind, raw in list(links(value)) or [("source", value)]:
+                try:
+                    options = impact_source_options(raw, kind, page, memory, project, page_names)
+                    for source in options:
+                        if source is None:
+                            raise ValueError("ambiguous_wiki_source")
+                        source_path = local_source_path(project, source)
+                        info = safe_path_stat(source_path, project)
+                        if info and not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
+                            raise ValueError("unsupported_source_type")
+                        source_key = os.path.normcase(source)
+                        hits = changes_by_source.get(source_key, [])
+                        if info is None or stat.S_ISDIR(info.st_mode):
+                            hits = hits + changes_below.get(source_key, [])
+                        if hits or info:
+                            if hits:
+                                matches[source] = hits
+                            break
+                    else:
+                        reasons.add("missing_source")
+                except UnicodeError:
+                    reasons.add("invalid_source_encoding")
+                except (OSError, ValueError) as exc:
+                    safe_reasons = {"ambiguous_wiki_source", "nonlocal_source", "unsafe_source_path", "unsafe_path",
+                                    "symlink_or_reparse_point", "unsupported_windows_path", "unsupported_source_type"}
+                    reasons.add(str(exc) if isinstance(exc, ValueError) and str(exc) in safe_reasons else "unreadable_source")
+        if matches:
+            report["affected_pages"].append({"page": page.rel, "matched_sources": sorted(matches),
+                                              "matched_changes": {source: unique_changes(hits)
+                                                                  for source, hits in sorted(matches.items())},
+                                              "reason": "source_changed", "action": "review", "confirmed_stale": False})
+        if reasons:
+            report["unassessable_pages"].append({"page": page.rel, "reasons": sorted(reasons)})
+
+
+def unique_changes(changes):
+    unique = {(item["path"], item["previous_path"] or "", item["scope"], item["change"]): item for item in changes}
+    return [unique[key] for key in sorted(unique)]
+
+
+def impact_report(project, memory, base, head, include_worktree):
+    report = {"read_only": True, "status": "unavailable", "base": None, "head": None,
+              "worktree_requested": include_worktree, "worktree_included": False, "included_scopes": [],
+              "untracked_policy": "project_nonignored_excluding_dot_paths_and_dependency_or_build_directories" if include_worktree else "excluded",
+              "submodule_policy": "tracked_pointer_only",
+              "changed_sources": [], "affected_pages": [], "unassessable_pages": [], "page_baselines": [],
+              "limitations": [], "summary": {}}
+    try:
+        if safe_path_stat(project / ".git", project) is None:
+            raise GitReadError("not_a_git_worktree_root")
+        root = git_read(project, "rev-parse", "--show-toplevel", allowed=(0, 128))
+        if root.returncode or Path(root.stdout.decode("utf-8").rstrip("\r\n")).resolve() != project:
+            raise GitReadError("project_must_be_git_worktree_root")
+        report["base"] = git_revision(project, base)
+        report["head"] = git_revision(project, head)
+        if not report["base"] or not report["head"]:
+            if git_read(project, "rev-parse", "--is-shallow-repository").stdout.strip() == b"true":
+                report["limitations"].append("shallow_repository_history_may_be_missing")
+            raise GitReadError("base_revision_unresolved" if not report["base"] else "head_revision_unresolved")
+        scopes = {"commit": ("diff", *DIFF_OPTIONS, report["base"], report["head"], "--", ".")}
+        if include_worktree:
+            if report["head"] != git_revision(project, "HEAD"):
+                report["limitations"].append("worktree_requires_current_head")
+            else:
+                scopes["staged"] = ("diff", *DIFF_OPTIONS, "--cached", report["head"], "--", ".")
+                try:
+                    filters = git_read(project, "config", "--null", "--name-only", "--get-regexp",
+                                       r"^filter\..*\.(clean|process)$", allowed=(0, 1))
+                    if filters.returncode == 1 and not filters.stdout:
+                        scopes["unstaged"] = ("diff", *DIFF_OPTIONS, "--", ".")
+                    else:
+                        report["limitations"].append("unstaged_skipped_to_avoid_git_filters")
+                except GitReadError as exc:
+                    report["limitations"].append(f"unstaged: {exc}")
+                scopes["untracked"] = ("ls-files", "--others", "--exclude-standard", "-z",
+                                       *(f"--exclude={pattern}" for pattern in UNTRACKED_EXCLUDES), "--", ".")
+        rejected = 0
+        for scope, args in scopes.items():
+            try:
+                changes = git_changes(git_read(project, *args).stdout, scope)
+                report["included_scopes"].append(scope)
+                for change in changes:
+                    try:
+                        for path in (change["path"], change["previous_path"]):
+                            if path is not None:
+                                safe_path_stat(local_source_path(project, path), project)
+                        report["changed_sources"].append(change)
+                    except (OSError, ValueError):
+                        rejected += 1
+            except GitReadError as exc:
+                report["limitations"].append(f"{scope}: {exc}")
+        if rejected:
+            report["limitations"].append(f"unsafe_or_unreadable_changed_paths: {rejected}")
+        report["worktree_included"] = set(scopes) == {"commit", "staged", "unstaged", "untracked"} and (
+            len(report["included_scopes"]) == 4 and not rejected)
+        report["changed_sources"] = unique_changes(report["changed_sources"])
+        if report["included_scopes"]:
+            map_impact_sources(project, memory, report)
+            report["status"] = ("incomplete" if report["limitations"] or report["unassessable_pages"] else "complete")
+    except (OSError, ValueError) as exc:
+        report["limitations"].append(str(exc) if isinstance(exc, GitReadError) else "git_worktree_unreadable_or_unsafe")
+    report["summary"] = {key: len(report[key]) for key in ("changed_sources", "affected_pages", "unassessable_pages")}
+    return report
+
+
+MAX_TOOL_BYTES = 2 * 1024 * 1024
+
+
+def bounded_read(path, boundary):
+    info = safe_path_stat(path, boundary)
+    if info is None:
+        raise ValueError("missing_file")
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError("not_a_regular_file")
+    if info.st_size > MAX_TOOL_BYTES:
+        raise ValueError("file_too_large")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    with os.fdopen(os.open(path, flags), "rb") as handle:
+        if not os.path.samestat(info, os.fstat(handle.fileno())):
+            raise ValueError("file_changed_during_open")
+        data = handle.read(MAX_TOOL_BYTES + 1)
+    if len(data) > MAX_TOOL_BYTES:
+        raise ValueError("file_too_large")
+    return data
+
+
+def declared_tool_version(text):
+    try:
+        syntax = ast.parse(text)
+    except (SyntaxError, ValueError, RecursionError):
+        return None
+    values = [node.value.value for node in syntax.body
+              if isinstance(node, ast.Assign) and len(node.targets) == 1
+              and isinstance(node.targets[0], ast.Name) and node.targets[0].id == "VERSION"
+              and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)]
+    return values[0] if len(values) == 1 and re.fullmatch(r"[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}", values[0]) else None
+
+
+def tool_description(path, boundary):
+    info = {"path": str(path), "version": None, "sha256": None, "issue": None}
+    try:
+        data = bounded_read(path, boundary)
+        info["sha256"] = hashlib.sha256(data).hexdigest()
+        info["version"] = declared_tool_version(data.decode("utf-8-sig"))
+        if info["version"] is None:
+            info["issue"] = "version_not_declared_or_unparseable"
+    except UnicodeError:
+        info["issue"] = "invalid_utf8"
+    except OSError:
+        info["issue"] = "unreadable_file"
+    except ValueError as exc:
+        info["issue"] = str(exc)
+    return info
+
+
+def tool_configuration(project, memory):
+    result = {"schema_version": None, "schema_compatibility": "unknown", "tool_version": None,
+              "tool_version_relation": "unknown", "link_style": None, "link_style_compatibility": "unknown", "issue": None}
+    try:
+        data = json.loads(bounded_read(memory / ".memory.json", project).decode("utf-8-sig"))
+        if not isinstance(data, dict):
+            raise ValueError
+    except (OSError, UnicodeError, ValueError, RecursionError):
+        result["issue"] = "configuration_missing_unreadable_or_invalid"
+        return result
+    schema = data.get("schema_version")
+    if type(schema) is int:
+        result["schema_version"] = schema
+        result["schema_compatibility"] = {1: "legacy_read_only", 2: "supported"}.get(schema, "unsupported")
+    version = data.get("tool_version")
+    if isinstance(version, str) and re.fullmatch(r"[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}", version):
+        result["tool_version"] = version
+        declared = tuple(map(int, version.split(".")))
+        current = tuple(map(int, VERSION.split(".")))
+        result["tool_version_relation"] = "same" if declared == current else "older" if declared < current else "newer"
+    try:
+        result["link_style"] = memory_link_style(data)
+        result["link_style_compatibility"] = "supported" if "link_style" in data else "legacy_default"
+    except ValueError:
+        result["link_style_compatibility"] = "unsupported"
+    return result
+
+
+def tool_diff_report(project, memory, reference_arg):
+    running = Path(__file__).resolve()
+    running_tool = tool_description(running, Path(running.anchor))
+    local = memory / "工具" / "memory.py"
+    reference, issue = None, None
+    if reference_arg:
+        specified = Path(reference_arg)
+        if (".." in specified.parts or specified.anchor and not specified.is_absolute()
+                or reference_arg.startswith(("//", "\\\\")) or re.search(r"[\x00-\x1f\x7f\ud800-\udfff]", reference_arg)):
+            issue = "unsafe_reference_path"
+        else:
+            reference = specified if specified.is_absolute() else project / specified
+    elif running.parent.name == "scripts" and (running.parent.parent / "SKILL.md").is_file():
+        reference = running
+    else:
+        issue = "explicit_reference_required_for_standalone_tool"
+    local_tool = running_tool if running == local else tool_description(local, project)
+    reference_tool = None
+    if reference is not None:
+        reference_tool = running_tool if reference == running else tool_description(reference, Path(reference.anchor))
+    if reference is not None:
+        try:
+            if reference == local or (local_tool["sha256"] and reference_tool["sha256"] and reference.samefile(local)):
+                issue = "reference_is_project_tool"
+        except OSError:
+            issue = "tool_identity_unavailable"
+    if not issue and any(tool["sha256"] is None or tool["issue"] == "invalid_utf8" for tool in (local_tool, reference_tool)):
+        issue = "unreadable_or_unsupported_tool"
+    identical = None if issue else local_tool["sha256"] == reference_tool["sha256"]
+    return {"read_only": True, "status": "not_comparable" if identical is None else "same" if identical else "different",
+            "identical": identical, "issue": issue, "running_tool": running_tool,
+            "project_tool": local_tool, "reference_tool": reference_tool, "configuration": tool_configuration(project, memory),
+            "notes": ["Version declarations do not establish byte identity.",
+                      "Review project customizations and validate compatibility before manually upgrading."]}
+
+
 def main(argv=None):
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", action="version", version=f"wiki-memory {VERSION}")
-    parser.add_argument("command", choices=("init", "check", "index", "plan-migration"))
+    parser.add_argument("command", choices=("init", "check", "index", "plan-migration", "impact", "tool-diff"))
     parser.add_argument("--project", default=".")
     parser.add_argument("--memory-dir", default="wiki_memory")
     parser.add_argument("--mode", choices=("lite", "standard"), help="init: default lite; plan-migration: default existing mode")
+    parser.add_argument("--link-style", choices=LINK_STYLES, help="init only: navigation style (default markdown)")
     parser.add_argument("--date", type=date.fromisoformat, default=date.today(), help="local verification date (YYYY-MM-DD)")
     parser.add_argument("--stale-days", type=int, default=90)
     parser.add_argument("--apply", action="store_true", help="write the previewed init/index files")
     parser.add_argument("--require-ready", action="store_true", help="check only: require populated active states with evidence and the selected mode's log layout")
+    parser.add_argument("--base", help="impact: required starting Git revision")
+    parser.add_argument("--head", help="impact: ending Git revision (default HEAD)")
+    parser.add_argument("--include-worktree", action="store_true",
+                        help="impact: include staged, unstaged and eligible untracked paths at current HEAD")
+    parser.add_argument("--reference-tool", help="tool-diff: path to a reference script, read as data only")
     args = parser.parse_args(argv)
     try:
-        if args.command == "check" and args.apply:
-            raise ValueError("check is read-only; --apply is not accepted")
-        if args.command == "plan-migration" and args.apply:
-            raise ValueError("plan-migration is read-only; --apply is not accepted")
+        if args.command not in {"init", "index"} and args.apply:
+            raise ValueError(f"{args.command} is read-only; --apply is not accepted")
+        if args.command == "impact" and args.base is None:
+            raise ValueError("impact requires --base")
+        if args.command != "impact" and (args.base is not None or args.head is not None or args.include_worktree):
+            raise ValueError("--base, --head and --include-worktree are accepted only by impact")
+        if args.reference_tool is not None and args.command != "tool-diff":
+            raise ValueError("--reference-tool is accepted only by tool-diff")
         if args.mode is not None and args.command not in {"init", "plan-migration"}:
             raise ValueError("--mode is accepted only by init and plan-migration")
+        if args.link_style is not None and args.command != "init":
+            raise ValueError("--link-style is accepted only by init; change .memory.json to switch an existing project's generated navigation")
         if args.require_ready and args.command != "check":
             raise ValueError("--require-ready is accepted only by read-only check")
         if args.stale_days < 0:
             raise ValueError("stale-days must be nonnegative")
         project, memory = locations(args.project, args.memory_dir)
+        if args.command == "impact":
+            report = impact_report(project, memory, args.base, args.head if args.head is not None else "HEAD", args.include_worktree)
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report["status"] == "complete" else 1
+        if args.command == "tool-diff":
+            report = tool_diff_report(project, memory, args.reference_tool)
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 1 if report["status"] == "not_comparable" else 0
         if args.command == "init":
-            plan, agents, previous = initialize(project, memory, args.mode or "lite", args.date)
-            apply_plan(plan, project, args.apply, agents, previous, new_root=memory)
+            mode, link_style = args.mode or "lite", args.link_style or "markdown"
+            plan, agents, previous = initialize(project, memory, mode, args.date, link_style)
+            apply_plan(plan, project, args.apply, agents, previous, new_root=memory,
+                       init_options={"mode": mode, "link_style": link_style})
             return 0
         if args.command == "plan-migration":
             report = migration_plan(project, memory, args.mode)
@@ -1168,7 +1728,8 @@ def main(argv=None):
             errors, warnings = inspect(project, memory, pages, args.date, args.stale_days, require_ready=args.require_ready)
             budget = None
             try:
-                config_data = json.loads(read_text(memory / ".memory.json").lstrip("\ufeff"))
+                raw = read_memory_config(memory)
+                config_data = json.loads(raw.decode("utf-8-sig")) if raw is not None else None
                 if isinstance(config_data, dict):
                     budget = read_budget_report(project, memory, pages, config_data)
             except (OSError, ValueError, TypeError, UnicodeError):
@@ -1176,7 +1737,7 @@ def main(argv=None):
             print(json.dumps({"pages": len(pages), "errors": errors, "warnings": warnings, "read_budget": budget}, ensure_ascii=False, indent=2))
             return 1 if errors else 0
         config = memory / ".memory.json"
-        config_snapshot = observed_bytes(config)
+        config_snapshot = read_memory_config(memory)
         config_data = json.loads(config_snapshot.decode("utf-8-sig")) if config_snapshot is not None else {}
         if (memory != project / "wiki_memory" or not isinstance(config_data, dict)
                 or type(config_data.get("schema_version")) is not int
@@ -1190,7 +1751,7 @@ def main(argv=None):
         snapshots[config] = config_snapshot
         moc_defaults = config_data.get("moc_defaults", {})
         plan = {}
-        for path, generated in index_contents(pages).items():
+        for path, generated in index_contents(pages, memory_link_style(config_data)).items():
             target = memory / path
             previous = snapshots.get(target)
             if previous is None:

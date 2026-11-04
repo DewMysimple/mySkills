@@ -3,7 +3,7 @@ type: moc
 status: active
 kind: process
 importance: high
-updated: 2026-10-10
+updated: 2026-11-04
 topic: memory-entry
 sources: []
 ---
@@ -16,7 +16,7 @@ sources: []
 
 ## 读取与维护
 
-新会话读协议及概览、约束、待办，再按任务定位；当前上下文已读且未变的内容复用，历史按需。日常读取、同步、交接直接执行本协议，不调用 wiki-memory Skill。实质修改结束后同步相关页和一份日志，统一刷新索引并普通检查一次；提交推送授权见根 AGENTS.md。
+新会话先读适用项目指令和协议。只读窄查询直接定位相关证据，涉及约束、分支或恢复时补读相应页面。修改、接续或较大范围任务先读概览、约束、待办。已读且未变的内容可复用，历史按需查询。日常读取、同步、交接直接执行项目协议。实质修改结束后同步相关页和一份日志，统一刷新索引并普通检查一次。提交推送授权见根 AGENTS.md。
 
 ```text
 python -X utf8 "wiki_memory/工具/memory.py" index --project . --apply
@@ -35,19 +35,21 @@ python -X utf8 "wiki_memory/工具/memory.py" check --project .
 
 状态、决策、知识、日志各自保存事实与历史；模板/ 保留本仓库模板，工具/ 保存独立工具副本。wiki-memory/ 是可分发 Skill，wiki_memory/ 是本仓库文档，随 Git 保存；安装 Skill 不自动升级项目。
 
+本仓库已显式使用 `link_style: markdown` 生成导航。历史与手写引用继续兼容 Wiki 语法。专项影响复核和工具指纹比较见维护协议。
+
 [日志布局示例](../wiki-memory/assets/standard-log-layout/) 是虚构教学内容，[理论原文](../wiki-memory/references/llm-wiki.md) 可选阅读，均不当作项目历史。
 
 <!-- wiki-memory:auto:start -->
 
 ## 当前状态
 
-- [[当前状态/已知问题.md|已知问题]] — active
-- [[当前状态/当前待办.md|当前待办]] — active
-- [[当前状态/当前约束.md|当前约束]] — active
-- [[当前状态/系统架构.md|系统架构]] — active
-- [[当前状态/项目概览.md|项目概览]] — active
+- [已知问题](当前状态/已知问题.md) — active
+- [当前待办](当前状态/当前待办.md) — active
+- [当前约束](当前状态/当前约束.md) — active
+- [系统架构](当前状态/系统架构.md) — active
+- [项目概览](当前状态/项目概览.md) — active
 
-- [[决策/MOC_决策.md|工程决策目录]] — 4 页，按主题或模块检索。
-- [[知识/MOC_知识.md|稳定知识目录]] — 11 页，按主题或模块检索。
+- [工程决策目录](决策/MOC_决策.md) — 4 页，按主题或模块检索。
+- [稳定知识目录](知识/MOC_知识.md) — 11 页，按主题或模块检索。
 
 <!-- wiki-memory:auto:end -->

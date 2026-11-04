@@ -3,7 +3,7 @@ type: knowledge
 status: active
 kind: module
 importance: high
-updated: 2026-10-26
+updated: 2026-11-04
 verified: 2026-10-10
 topic: skill-wiki-memory
 sources: ["wiki-memory/SKILL.md", "wiki-memory/scripts/memory.py", "wiki-memory/scripts/test_memory.py", "wiki-memory/scripts/handoff_cases.py", "wiki-memory/assets/protocol.md", "wiki-memory/references/memory-model.md", "wiki-memory/references/handoff-evaluation.md", "wiki_memory/.memory.json", "wiki_memory/工具/memory.py"]
@@ -11,7 +11,7 @@ sources: ["wiki-memory/SKILL.md", "wiki-memory/scripts/memory.py", "wiki-memory/
 
 # Skill：工程记忆
 
-入口为 wiki-memory/SKILL.md；当前 3.2.1 仅在用户明确要求记忆管理时加载，agents/openai.yaml 设置 allow_implicit_invocation: false。已接入项目直接按项目内协议读取、同步和交接，不加载 Skill 或参考；独立工具不依赖个人安装位置。
+入口为 wiki-memory/SKILL.md。3.4.0 沿用显式调用策略，agents/openai.yaml 设置 allow_implicit_invocation: false。已接入项目直接按项目内协议读取、同步和交接，独立工具无需个人 Skill 安装位置。
 
 ## 布局与来源
 
@@ -25,7 +25,9 @@ sources: ["wiki-memory/SKILL.md", "wiki-memory/scripts/memory.py", "wiki-memory/
 - check 排除代码块、注释、引用及明显否定示例，正式接入块须唯一且成对；无标记旧接入兼容但警告人工复核。根 AGENTS 的原读取规则现已加正式标记，权限内容未改。
 - read_budget 统计 Unicode 字符，默认启动 16000、单页 6000、待办 20；可部分覆盖，0 禁用。超限只提示；非法配置仍报错。默认阈值由 Agent 在用户授权整改范围内选定，不是用户明确指定值，也不冒充模型 token。
 - plan-migration 始终只读并拒绝 --apply，列出移动、导航合并、引用修正、冲突、未分类日志和状态工作。不猜 kind、不自动执行；项目 Markdown 外的代码/配置文字仍需人工盘点。
-- schema 仍为 2、navigation 为 README.md；本仓库工具/配置/协议显式升级 3.2.1，moc_defaults 与 mySkills 定制规则保留。历史 memory_lint.py 不混用。
+- schema 仍为 2、navigation 为 README.md。新初始化默认 Markdown，旧配置缺 `link_style` 时沿用原导航。本仓库显式切换生成区到 Markdown，并保留手写链接、历史和项目定制。
+- `impact` 对指定 Git 范围做文件级匹配，列出复核候选、不可映射来源和页面核实基线。局部复核就近补证据，整页 `verified` / `verified_rev` 维持原值。
+- `tool-diff` 只读对比版本声明、字节 SHA-256 和配置兼容性。升级前审查项目特有差异，再同步适用能力。
 
 ## 日常开销与停止条件
 
@@ -41,4 +43,6 @@ sources: ["wiki-memory/SKILL.md", "wiki-memory/scripts/memory.py", "wiki-memory/
 
 维护者用 scripts/handoff_cases.py 在临时目录生成真实可运行小工程；实际结果及读取统计见 references/handoff-evaluation.md。评测观察到长参考输出截断和导航重复读取，已加按章读取提示；不把自查或脚本单测当作独立换会话验证。一次小工程评测不证明所有平台、真实大型项目或模型不会遗忘。
 
-以前 3.1.0 的 81 项测试和其他项目结果仅属历史，见 [[日志/工程维护/2026-10-09-补齐标准日志分类与理论参考.md|此前日志]]；本次只升级 mySkills 副本和隔离材料。任务记录及最终本仓库检查见 [[日志/工程维护/2026-10-10-完善工程记忆校验与交接评测.md|整改日志]]。
+2026-11-04 局部核实 3.4.0 的工具、协议、项目生成导航与 A/B/C 评测基础设施。隔离评测覆盖八类行为，按无记忆、真实 3.2.1 基线、当前候选构造同业务状态的临时工程。模型语义评分依赖独立会话的轨迹与私有 oracle，实际模型测量状态见迭代日志。
+
+3.1.0 的 81 项测试和其他项目结果留在 [[日志/工程维护/2026-10-09-补齐标准日志分类与理论参考.md|此前日志]]。3.2.x 验证范围见 [[日志/工程维护/2026-10-10-完善工程记忆校验与交接评测.md|历史整改日志]]。

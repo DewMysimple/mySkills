@@ -31,6 +31,19 @@ Use $video-transcript-polisher to conservatively polish this lecture transcript 
 
 The Skill can also be discovered automatically when a task matches its intended scope.
 
+## Engineering memory
+
+Version 3.4.0 of `wiki-memory` keeps schema 2 and stores project memory in `wiki_memory/`. Lite uses one current-state page. Standard maintains five state pages and six log categories. The project README is the sole navigation page. The Skill is explicit-only, and routine work in an initialized project follows its local protocol. Narrow read-only questions can go directly to relevant evidence when the project rules allow it. Changes and handoffs retain the full startup reading.
+
+Init previews changes by default and applies them with `--apply`. New projects set `"link_style": "markdown"` and generate relative links. Existing projects without this field keep Wiki navigation and the original Markdown log table. To switch explicitly, set the field in `.memory.json`, preview `index`, and apply with `index --apply`. Handwritten links and historical pages stay intact.
+
+```text
+python -X utf8 wiki-memory/scripts/memory.py impact --project . --base <commit> --head HEAD
+python -X utf8 wiki-memory/scripts/memory.py tool-diff --project .
+```
+
+`impact` matches Git changes to page sources and flags candidates for review. An optional `verified_rev` records a whole-page verification baseline. `tool-diff` compares declared versions, byte fingerprints, and configuration compatibility. Review differences before updating a project copy and carry forward project customizations. The standalone tool uses Python 3.10+ and the standard library. Run the two analysis commands when needed, with one ordinary check after routine memory changes or a strict check for initialization, structural migration, or full acceptance. [Skill](wiki-memory/SKILL.md) · [Upgrade instructions](wiki-memory/references/memory-model.md#升级独立工具与导航格式) · [Isolated A/B/C evaluation](wiki-memory/references/handoff-evaluation.md)
+
 ## Repository Structure
 
 ```text
