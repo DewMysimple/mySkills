@@ -3,7 +3,7 @@ type: moc
 status: active
 kind: process
 importance: high
-updated: 2026-11-04
+updated: 2026-11-06
 topic: catalog-决策
 sources: []
 ---
@@ -18,5 +18,6 @@ sources: []
 - [每轮修改完成后提交推送](ADR-002-每轮修改完成后提交推送.md) — active · myskills-git-delivery
 - [根目录记忆与 README 统一导航](ADR-003-根目录记忆与README统一导航.md) — active · memory-layout-and-navigation
 - [标准日志分类与理论溯源](ADR-004-标准日志分类与理论溯源.md) — active · standard-log-categories-and-theory
+- [ADR-005｜转录调度与逐文件写入](ADR-005-转录调度与逐文件写入.md) — active · transcript-scheduling-and-writes
 
 <!-- wiki-memory:auto:end -->

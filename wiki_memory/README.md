@@ -3,7 +3,7 @@ type: moc
 status: active
 kind: process
 importance: high
-updated: 2026-11-04
+updated: 2026-11-06
 topic: memory-entry
 sources: []
 ---
@@ -49,7 +49,7 @@ python -X utf8 "wiki_memory/工具/memory.py" check --project .
 - [系统架构](当前状态/系统架构.md) — active
 - [项目概览](当前状态/项目概览.md) — active
 
-- [工程决策目录](决策/MOC_决策.md) — 4 页，按主题或模块检索。
+- [工程决策目录](决策/MOC_决策.md) — 5 页，按主题或模块检索。
 - [稳定知识目录](知识/MOC_知识.md) — 11 页，按主题或模块检索。
 
 <!-- wiki-memory:auto:end -->

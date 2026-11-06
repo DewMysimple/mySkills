@@ -21,11 +21,13 @@ When the intended wording or grouping inside a garbled phrase is unclear, copy t
 
 ## Workflow
 
-1. Inspect the input and destination read-only. Keep the source unchanged by default. Use the requested destination or `processed/<same filename>` alongside the input file. Resolve unclear paths, mappings, or replacement scope before writing.
+Start a clear request immediately. Use preflight findings internally and proceed with authorized outputs under the environment's permissions.
+
+1. Inspect the input and destination read-only. Keep the source unchanged by default. Use the requested destination or `processed/<same filename>` alongside the input file. Verify each mapping and choose its write mode. Default to creating new files. Use replacement mode only if the user's instruction explicitly asks to replace an existing target. In create mode, set aside any existing target as a conflict before editing.
 2. Read the entire source before editing. Identify its language, topic order, recurring terminology, Markdown, timestamps, speaker labels, and metadata. If input, candidate output, or comparison cannot fit reliably in one pass, use [the long-transcript workflow](references/long-transcripts.md).
 3. Locate source sentences with clear repairable faults and mark the start and source wording of sustained topic or demo phases. Use those locations to guide the edit. Honor user constraints on punctuation, headings, lists, and layout.
 4. Review the complete candidate for fidelity and readability as separate passes. Repair issues and recheck affected passages before saving.
-5. Save only the reviewed transcript. Keep diagnostic notes, review findings, and any unfinished work outside the transcript and formal target.
+5. Stage the candidate outside the formal target. Publish it only after both reviews and metadata checks pass. In create mode, publish the reviewed temporary file with a filesystem operation that fails if the target exists, such as a no-replace move or link on the same filesystem. Use patch adds only for staging because they can overwrite. In replacement mode, recheck the target against preflight and preserve it if it has changed. Verify the published bytes and protected metadata.
 
 ## Markdown
 
@@ -43,5 +45,5 @@ When the intended wording or grouping inside a garbled phrase is unclear, copy t
 
 ## Other workflows
 
-- Use the main agent for one file or a small, related set. For large or independent batches, delegation, or independent batch review, read [batch review](references/batch-review.md). Confirm materially unclear delegation, mapping, or overwrite choices. A clear, non-destructive request needs no extra approval turn.
+- For multiple transcripts, read [batch processing](references/batch-review.md). Each file is reviewed and saved independently unless the user requests all-or-nothing behavior.
 - For explicit backfill or synchronization of an approved copy, use [approved-output backfill](references/approved-output-backfill.md) instead of editing the body again.

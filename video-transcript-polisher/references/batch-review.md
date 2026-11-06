@@ -1,27 +1,16 @@
-# Batch processing and independent review
+# Batch processing
 
-Read this file only when the request contains multiple transcripts, asks for delegation, or needs an independent review pass.
+Use these rules for requests covering multiple files, including [approved-output backfill](approved-output-backfill.md).
 
-## Internal planning
+## Map the files
 
-- First inspect the number of files, approximate total size, file independence, shared terminology, ASR ambiguity, review value, coordination cost, and whether delegation is available.
-- Use the main agent for a small batch, short files, or files that need shared cross-file context.
-- Consider multiple agents only when files are sufficiently independent and large or numerous enough for parallel work and independent review to outweigh coordination overhead.
-- File count alone is not a delegation threshold.
+- Identify each input and its one distinct destination before writing. Check for collisions between targets and with inputs, accounting for the filesystem's path and case rules. Treat paths or links whose identity or scope is uncertain as unsafe. Keep each source's content in its own output.
+- Set aside all entries involved in a duplicate mapping. Classify each remaining mapping as create, explicitly authorized replacement, or conflict before editing. For example, “polish the originals into `Test/` using the same filenames” creates new outputs. An existing `Test/lesson.md` is a conflict even if it contains the same text as the source. In that case, use a distinct safe path if the request allows it, or skip the target and record the conflict.
 
-## User-facing communication
+## Verify and save each result
 
-- Keep the planning assessment internal when the chosen strategy does not change the user's scope, destination, or risk.
-- Report only decisions or uncertainties that affect output expectations, mappings, write safety, or required user action.
-- Ask for explicit confirmation only when delegation, mappings, output scope, or overwrite behavior is materially ambiguous.
+- For each transcript edit, complete both review passes in [SKILL.md](../SKILL.md). For a [long transcript](long-transcripts.md), verify coverage and joins before saving. Apply the byte checks in the backfill workflow to approved copies.
+- Keep unfinished candidates outside formal targets. Check that the source still matches the reviewed input. Save each verified file as it is ready, using the mapped write mode from [SKILL.md](../SKILL.md). Coordinate writes so each target has a single publisher. Verify each saved result.
+- Isolate mapping, reading, review, and write failures to the affected files. Report saved paths, skipped or failed files, and the reasons after completing the safe work.
 
-## Safe batch execution
-
-- Assign each input file as a complete unit. The assigned worker may use the [long-transcript workflow](long-transcripts.md) within that file. Never divide its editing across agents or merge content across files.
-- Assign every input exactly once to a worker, candidate path, and reviewer. Keep candidates in an isolated task directory; workers must not write formal output targets.
-- Give workers the same immutable content rules and output mapping. Workers must not broaden the file set, delegate further, or reopen planning.
-- Apply both candidate review passes in [SKILL.md](../SKILL.md) to each file. For a segmented file, verify its source-range coverage and joins before accepting the full candidate.
-- A long-block warning or paragraph with multiple independent moves requires an explicit review finding: confirm one coherent argument or request targeted reflow.
-- If a worker result is missing, contradictory, or reports capacity failure, reconcile the assignment state before launching a replacement. Do not reuse an unresolved assignment.
-- If an independent reviewer is unavailable, the main agent may perform the equivalent review. A failed review requires a targeted correction and another review.
-- Write formal outputs only after every file has passed review or the main agent has completed the equivalent takeover review. Do not perform partial formal writes when a required mapping, candidate, review, or validation has failed.
+When the user requests all-or-nothing behavior, validate every file and use a write plan that can honor the requested guarantee. If any check fails or the environment cannot support that guarantee, report the limitation before publishing any result.
