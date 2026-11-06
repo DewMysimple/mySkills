@@ -1,4 +1,4 @@
 interface:
   display_name: "Video Transcript Polisher"
   short_description: "Edit ASR transcripts into faithful, readable Markdown"
-  default_prompt: "Use $video-transcript-polisher to make this transcript easier to read and revisit, preserving the speaker's voice, reasoning, and order with only source-supported edits."
+  default_prompt: "Use $video-transcript-polisher to fix clear local language errors and add navigation at sustained topic shifts while preserving the speaker's voice, reasoning, and order."

@@ -20,8 +20,8 @@
 
 `video-transcript-polisher` 主要用于：
 
-- 修复有充分证据的 ASR 错误，合并句子碎片，恢复标点与自然段，适度润色不流畅的局部表达。
-- 为讲者实际展开的主题添加少量标题，将明确的步骤或并列事项排成列表。
+- 修复有充分证据的 ASR 错误和可明确判断的局部语法错误，恢复断句与自然段。
+- 在讲者持续展开的主题切换处使用源文标题，按需将明确的步骤或并列事项排成列表。
 - 保留讲者的语言、信息顺序、推理、例子、自我修正与不确定性，以及数字、专名、时间戳和说话人标签。
 - 整理稿只呈现讲者表达过的内容，保留原始语言。
 - 长篇转录需要分段时，按原文顺序编辑，核对覆盖范围和衔接后再保存。
@@ -57,7 +57,7 @@ Skill 仍为显式调用。已接入项目的日常开发、检索和交接按�
 获取仓库后，将需要使用的 Skill 目录导入你的 Codex Skills 配置中，然后可以显式调用：
 
 ```text
-Use $video-transcript-polisher to conservatively polish this lecture transcript without summarizing it.
+Use $video-transcript-polisher to fix clear local errors and make sustained topic shifts easy to find while preserving what the speaker said.
 ```
 
 这个 Skill 也支持在任务内容与其适用场景匹配时被自动发现。

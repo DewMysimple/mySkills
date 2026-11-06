@@ -1,0 +1,176 @@
+[
+  {
+    "id": "e1",
+    "source": "It's also can be a quick way to spot problems with a scene early on. You still have time to change things at that point.\n",
+    "good": "It can also be a quick way to spot problems with a scene early on. You still have time to change things at that point.\n",
+    "bad": "It's also can be a quick way to spot problems with a scene early on. You still have time to change things at that point.\n",
+    "fidelity": [
+      "保留 can 的可能性和 also 的补充语气，以及尽早发现问题、此时仍有修改时间两层意思。"
+    ],
+    "readability": [
+      "主动修复 It's also can 的局部句法故障，接受语义等价的自然写法。"
+    ]
+  },
+  {
+    "id": "e2",
+    "source": "I'm looking at the board now. So this is a something you can get for free as well.\n",
+    "good": "I'm looking at the board now. So this is something you can get for free as well.\n",
+    "bad": "I'm looking at the board now. So this is a something you can get for free as well.\n",
+    "fidelity": [
+      "保留讲者关于免费获取的原话与 this 的指代范围，勿补全具体产品、界面对象、价格或功能。"
+    ],
+    "readability": [
+      "去掉 a something 的多余冠词，保留自然的口语过渡。"
+    ]
+  },
+  {
+    "id": "e3",
+    "source": "This is the sketch I would have chose.\n",
+    "good": "This is the sketch I would have chosen.\n",
+    "bad": "This is the sketch I would have chose.\n",
+    "fidelity": [
+      "保留 would have 的假设语气和 this 的指代，勿改成讲者实际选定了某张草图。"
+    ],
+    "readability": [
+      "修复 would have 后明确错误的过去分词。"
+    ]
+  },
+  {
+    "id": "e4",
+    "source": "Right now, one person is editing this file. And as the project goes on, you may need. It's not always that just one person works on one file. Sometimes two people work on the same file.\n",
+    "good": "Right now, one person is editing this file. And as the project goes on, it's not always just one person working on a file. Sometimes two people work on the same file.\n",
+    "bad": "Right now, one person is editing this file. As the project goes on, you may need to buy a file-locking tool. Sometimes two people work on the same file.\n",
+    "fidelity": [
+      "保留目前一人编辑、随着项目推进并非一直只一人、两人有时共用同一文件的顺序和含义。",
+      "相邻完整论述独立成立，且没有回指或补全 you may need。可以去掉未完成的起句，不能添加需要购买的工具或其他宾语。"
+    ],
+    "readability": [
+      "处理误断句和悬空的 you may need，令时间过渡与紧随其后的完整意思相连。"
+    ]
+  },
+  {
+    "id": "e5",
+    "source": "And it's usually done right at the start of the pro, the pro. Anyway, here's the one I used.\n",
+    "good": "And it's usually done right at the start of the pro, the pro… Anyway, here's the one I used.\n",
+    "bad": "And it's usually done right at the start of the project. Anyway, here's the one I used.\n",
+    "fidelity": [
+      "保留通常在开始时进行的说法和 pro 的未完成读法。上下文不足以确定其指 project、process 或其他词。"
+    ],
+    "readability": [
+      "允许用标点提示停顿或中断，勿用推测补齐来换取流畅。"
+    ]
+  },
+  {
+    "id": "e6",
+    "source": "So I did, for the station scene I worked on, I did kind of part different part breakdown. You can see it here.\n",
+    "good": "So, for the station scene I worked on, I did kind of part different part breakdown. You can see it here.\n",
+    "bad": "For the station scene I worked on, I wrote a separate blog post for each prop. You can see the posts here.\n",
+    "fidelity": [
+      "保留讲者做过某种 breakdown 的表达与不确定细节，勿断言如何分组、发布在哪里或画面上有哪些对象。",
+      "保留没有画面无法消解的 it 和 here。"
+    ],
+    "readability": [
+      "允许删去开头可安全合并的 I did 重启并调整标点，其余模糊措辞可以保留。"
+    ]
+  },
+  {
+    "id": "e7",
+    "source": "This method doesn't work for small teams sorry I meant large teams it works fine for small ones.\n",
+    "good": "This method doesn't work for small teams—sorry, I meant large teams. It works fine for small ones.\n",
+    "bad": "This method doesn't work for large teams. It works fine for small ones.\n",
+    "fidelity": [
+      "依序保留最初说 small teams、转而纠正为 large teams、最后补充小团队适用。"
+    ],
+    "readability": [
+      "让停顿与纠正清晰可辨，保留讲者改口的节奏。"
+    ]
+  },
+  {
+    "id": "e8",
+    "source": "Uh I think it might be caused by caching but only when the same key is reused.\n",
+    "good": "I think it might be caused by caching, but only when the same key is reused.\n",
+    "bad": "Caching is the root cause whenever the same key is reused.\n",
+    "fidelity": [
+      "保留讲者的推测及复用同一键的必要条件，勿改成确定因果或充分条件。"
+    ],
+    "readability": [
+      "可去掉纯填充词并标清条件边界。"
+    ]
+  },
+  {
+    "id": "e9",
+    "source": "So it's 80 hours on that task 40 on this and then the overall task will be 80 hours. That's what you can see here.\n",
+    "good": "So it's 80 hours on that task, 40 on this, and then the overall task will be 80 hours. That's what you can see here.\n",
+    "bad": "So it's 80 hours on that task, 40 on this, and then the overall task will be 120 hours. That's what you can see here.\n",
+    "fidelity": [
+      "三个数依序为 80、40、80 小时，表面算术矛盾不能成为改为 120 的证据。",
+      "保留任务间关系和这里可见的指代，勿猜测界面逻辑或小计含义。"
+    ],
+    "readability": [
+      "只需断清三个估时陈述，勿在正文插入算术判断或核对备注。"
+    ]
+  },
+  {
+    "id": "s1",
+    "source": "Let's start with the art bible template. Here I write the keywords next to the goals, so I can check whether a reference fits what I'm aiming for. I put the mood boards after that. I use separate pages for the outside and inside of the space. Lighting goes on its own page because I want to compare the scenes side by side.\n\nNow let me switch to a project example, the greenhouse scene. Here I used reference photos of old irrigation equipment. The hose looked too stiff in the first pass, so I gave it more of a curve. In the last image I show the same corner with the lights on.\n",
+    "good": "## Art Bible Template\n\nLet's start with the art bible template. Here I write the keywords next to the goals, so I can check whether a reference fits what I'm aiming for. I put the mood boards after that. I use separate pages for the outside and inside of the space. Lighting goes on its own page because I want to compare the scenes side by side.\n\n## Greenhouse Scene\n\nNow let me switch to a project example, the greenhouse scene. Here I used reference photos of old irrigation equipment. The hose looked too stiff in the first pass, so I gave it more of a curve. In the last image I show the same corner with the lights on.\n",
+    "bad": "Let's start with the art bible template. Here I write the keywords next to the goals, so I can check whether a reference fits what I'm aiming for. I put the mood boards after that. I use separate pages for the outside and inside of the space. Lighting goes on its own page because I want to compare the scenes side by side.\n\nNow let me switch to a project example, the greenhouse scene. Here I used reference photos of old irrigation equipment. The hose looked too stiff in the first pass, so I gave it more of a curve. In the last image I show the same corner with the lights on.\n",
+    "fidelity": [
+      "保留模板中各项与照明单页的原因，以及案例中参考物、软管修改和最后灯光图的说明。",
+      "保持模板到案例的原始过渡及讲述顺序，正文内容仍完整。"
+    ],
+    "readability": [
+      "模板和温室案例均有独立演示，应以简洁、源内可追溯的二级标题分别定位。标签措辞可变。"
+    ]
+  },
+  {
+    "id": "s2",
+    "source": "First, here's the card board. I keep a column for work that hasn't started and a column for work I'm doing. When I start painting a prop, I drag its card over. I can still read the note I wrote on the card before I move it.\n\nNow I'm switching to the schedule board. Here I can see the tasks under this scene in one place. I open the lighting task to check the estimate. This one has a subtask for testing the shadows. I give the subtask its own estimate, and then I close the task and go back to the schedule.\n",
+    "good": "## Card Board\n\nFirst, here's the card board. I keep a column for work that hasn't started and a column for work I'm doing. When I start painting a prop, I drag its card over. I can still read the note I wrote on the card before I move it.\n\n## Schedule Board\n\nNow I'm switching to the schedule board. Here I can see the tasks under this scene in one place. I open the lighting task to check the estimate. This one has a subtask for testing the shadows. I give the subtask its own estimate, and then I close the task and go back to the schedule.\n",
+    "bad": "## Basic Tracking Without Estimates\n\nFirst, here's the card board. I keep a column for work that hasn't started and a column for work I'm doing. When I start painting a prop, I drag its card over. I can still read the note I wrote on the card before I move it.\n\n## Better Estimates and Task Management\n\nNow I'm switching to the schedule board. Here I can see the tasks under this scene in one place. I open the lighting task to check the estimate. This one has a subtask for testing the shadows. I give the subtask its own estimate, and then I close the task and go back to the schedule.\n",
+    "fidelity": [
+      "保留卡片看板到排期看板的先后、两种演示的操作和估时属于哪项任务。",
+      "标题不能宣称一套工具更好、另一套工具没有估时功能，也不能凭指代补造界面元素。"
+    ],
+    "readability": [
+      "用两段源内工具名建立导航，短暂的估时与子任务示范保留在第二段内即可。"
+    ]
+  },
+  {
+    "id": "s3",
+    "source": "First I'll show the challenge pages. When I started the entry, I posted the sketch there so people could see what I was starting from. I went back to that same page to post the finished image.\n\nNow let's look at the blog posts. I kept the early lighting tests in a post because I wanted to see how the shadows had changed between versions. The final image is still on the challenge page.\n\nThe last one is the chat server. I posted a small crop there when I couldn't tell if the window was too bright. Someone pointed out the reflection. I went back to look at it, but I didn't post a new image that day.\n",
+    "good": "## Challenge Pages\n\nFirst I'll show the challenge pages. When I started the entry, I posted the sketch there so people could see what I was starting from. I went back to that same page to post the finished image.\n\n## Blog Posts\n\nNow let's look at the blog posts. I kept the early lighting tests in a post because I wanted to see how the shadows had changed between versions. The final image is still on the challenge page.\n\n## Chat Server\n\nThe last one is the chat server. I posted a small crop there when I couldn't tell if the window was too bright. Someone pointed out the reflection. I went back to look at it, but I didn't post a new image that day.\n",
+    "bad": "## Challenge Pages\n\n- Posted the sketch and the finished image.\n\n## Blog Posts\n\n- Compared the shadows between versions.\n\n## Chat Server\n\n- Got feedback on a reflection.\n",
+    "fidelity": [
+      "依序保留三种媒介各自的内容、动机和例子，包括同一挑战页发布成图、帖子记录早期灯光测试、聊天反馈后当天没有发新图。",
+      "为正文增加定位点时仍须保留完整叙述，勿用摘要式清单替换。"
+    ],
+    "readability": [
+      "挑战页、博客和聊天服务器均独立展开，用三个源内名称定位，保留每段的转场与自然段。"
+    ]
+  },
+  {
+    "id": "s4",
+    "source": "I group the screws by length so I can find the one I need without sorting them again. For example when I reach for a short screw I can pick it out from the short ones.\n\nThat is why I put the different lengths in separate cups.\n",
+    "good": "I group the screws by length so I can find the one I need without sorting them again. For example, when I reach for a short screw, I can pick it out from the short ones. That is why I put the different lengths in separate cups.\n",
+    "bad": "## Grouping by Length\n\nI group the screws by length so I can find the one I need without sorting them again.\n\n## Short Screws\n\nFor example, when I reach for a short screw, I can pick it out from the short ones. That is why I put the different lengths in separate cups.\n",
+    "fidelity": [
+      "保留按长度分组的做法、短螺丝的例子及用不同杯子存放的原因。"
+    ],
+    "readability": [
+      "这是一条连贯说明，短例子服务于同一个观点，可以零标题，勿将例子升级为独立章节。"
+    ]
+  },
+  {
+    "id": "s5",
+    "source": "There are three steps. First open the scene. Next check the material names. Finally save a copy. I keep the original open because sometimes a material name isn't the problem. If the light is the problem, I want to see the original with that light still in it.\n",
+    "good": "There are three steps.\n\n1. Open the scene.\n2. Check the material names.\n3. Save a copy.\n\nI keep the original open because sometimes a material name isn't the problem. If the light is the problem, I want to see the original with that light still in it.\n",
+    "bad": "There are three steps.\n\n1. Open the scene.\n2. Check the material names.\n3. Save a copy.\n\n- I keep the original open because sometimes a material name isn't the problem.\n- If the light is the problem, I want to see the original with that light still in it.\n",
+    "fidelity": [
+      "保留三步的顺序、保留原件打开的理由和关于灯光的条件判断。"
+    ],
+    "readability": [
+      "可将明确枚举的三步排成有序列表。连续的后续理由与条件维持自然叙述，勿把它们当作并列步骤或要点。"
+    ]
+  }
+]

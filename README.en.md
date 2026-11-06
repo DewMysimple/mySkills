@@ -14,9 +14,8 @@ The first Skill in this repository is [`video-transcript-polisher`](video-transc
 
 `video-transcript-polisher` is designed to:
 
-- Correct ASR wording only when semantics, common knowledge, and context provide strong evidence;
-- Join fragments caused by speech recognition, restore punctuation, and improve paragraph structure;
-- Use `#` and `##` headings sparingly, and create lists only when the source clearly presents list relationships;
+- Repair ASR errors with strong evidence and fix unambiguous local grammar, sentence boundaries, and paragraph breaks;
+- Use source-derived headings at sustained topic shifts and format explicit steps or parallel items as lists where useful;
 - Preserve the source language, information order, numbers, proper names, examples, reasoning, timestamps, and speaker labels;
 - Never translate, summarize, expand, or rewrite a lecture into a new article;
 - Write processed copies to a `processed/` directory beside the input while keeping the original file unchanged.
@@ -26,7 +25,7 @@ The first Skill in this repository is [`video-transcript-polisher`](video-transc
 After obtaining this repository, import the Skill directory you want to use into your Codex Skills configuration. You can then invoke it explicitly:
 
 ```text
-Use $video-transcript-polisher to conservatively polish this lecture transcript without summarizing it.
+Use $video-transcript-polisher to fix clear local errors and make sustained topic shifts easy to find while preserving what the speaker said.
 ```
 
 The Skill can also be discovered automatically when a task matches its intended scope.
