@@ -1,58 +1,43 @@
 ---
 name: video-transcript-polisher
-description: Faithfully polish Whisper or ASR lecture transcripts into readable Markdown while preserving the source wording, order, and meaning. Use for transcript cleanup and restrained structure when useful, not summarizing, translating, or rewriting; read the batch or backfill reference only when that mode is actually needed.
+description: Faithfully edit Whisper or ASR lecture transcripts into readable, searchable Markdown while preserving the speaker's meaning, voice, and order. Use for transcript cleanup, restrained structure, or approved-output backfill. Excludes summarization, translation, and knowledge rewriting.
 ---
 
 # Video Transcript Polisher
 
-Polish video-course and classroom transcripts into a readable, searchable record of what the lecturer said.
+**Edit the transcript, not the knowledge.** Produce a readable record of the lecture. Every substantive statement and relationship must be traceable to what the speaker expressed.
 
-## Scope and invariants
+## Editing boundaries
 
-- Preserve the source language, order of ideas, examples, claims, reasoning, numbers, dates, names, technical details, and meaningful repetition.
-- Do not summarize, translate, condense, expand, explain, fact-check, or turn the lecture into a new article.
-- Follow explicit user constraints on punctuation-only cleanup, headings, lists, or layout. Do not add structure the user has declined.
-- Correct only high-confidence ASR wording errors. If the intended wording is still ambiguous, preserve the source.
-- Keep the source file untouched. Use the requested destination, or a sibling `processed/` copy with the same filename when no destination is supplied. Never overwrite the source by default.
+- **L1 · Text repair.** Correct supported ASR errors and restore punctuation, sentence boundaries, casing, and spacing in the source language. Join fragments and remove only clearly non-semantic fillers, stutter fragments, and accidental repeats. Keep meaningful connectors and questions.
+- **L2 · Structure and local fluency.** Use the smallest local wording or word-order change that resolves a reading difficulty. Use sentence and paragraph boundaries to clarify transitions the speaker already made. Preserve the language, voice, order of ideas, claims, reasoning, examples, and technical details. Keep meaningful repetition, polarity, uncertainty, degree, conditions, scope, and exceptions. If the speaker later refers back to their own wording to correct or clarify it, keep the referenced wording as spoken, apart from punctuation or supported ASR repair. Leave difficult wording intact when smoothing it would require guessing.
+- **L3 · Knowledge rewriting.** Exclude summaries, key takeaways, review questions, new definitions, explanations, examples, abstractions, causal links, and conclusions. Do not translate, fact-check the speaker's claims, or rearrange the lecture into a new argument.
 
-## Core workflow
+For ASR substitutions, prefer user-supplied terminology or clear source repetition, then uniquely identifying context. Consult an authoritative reference only to resolve a specialized term's identity or spelling. For high-risk tokens such as numbers, dates, names, tools, APIs, functions, filenames, and code identifiers, require support from the user or the transcript itself. Familiarity and grammar alone are insufficient. Keep ambiguous readings and distinguish spoken self-corrections from transcription errors.
 
-1. Read the complete file before editing. Identify its language, existing Markdown, timestamps, speakers, and recurring terminology.
-2. Make a conservative internal pass for likely ASR errors. Correct a word only when source repetition, uniquely identifying context, a user-provided reference, or an authoritative reference makes the intended word clear. Grammar or familiarity alone is not enough.
-3. Apply only necessary punctuation, sentence-boundary, capitalization, spacing, and paragraph changes.
-4. Map the source's topic phases before formatting. Follow the user's requested format, and add Markdown structure only when it materially improves navigation: use headings for clear sustained topic changes or independent method phases, and lists for explicit parallel or ordered items.
-5. Compare the result with the source before saving. Confirm that no claims, examples, numbers, names, meaningful spoken content, or idea order were lost or invented.
-6. Save only the clean output at the requested destination or the default `processed/` destination.
+## Workflow
 
-## Conservative correction rules
+1. Inspect the input and destination read-only. Keep the source unchanged by default. Use the requested destination or `processed/<same filename>` alongside the input file. Resolve unclear paths, mappings, or replacement scope before writing.
+2. Read the entire source before editing. Identify its language, topic order, recurring terminology, Markdown, timestamps, speaker labels, and metadata. If input, candidate output, or comparison cannot fit reliably in one pass, use [the long-transcript workflow](references/long-transcripts.md).
+3. Repair the text and apply only source-supported structure. Honor user constraints on punctuation, headings, lists, and layout.
+4. Review the complete candidate for fidelity and readability as separate passes. Repair issues and recheck affected passages before saving.
+5. Save only the reviewed transcript. Keep diagnostic notes, review findings, and any unfinished work outside the transcript and formal target.
 
-- A recurring technical term, obvious homophone, malformed word, number, date, name, or acronym may be corrected when the surrounding transcript strongly establishes the intended form.
-- Prefer evidence in this order: user-provided terminology or source repetition, uniquely identifying local context, then an authoritative external reference when needed. Treat grammar and general plausibility only as supporting evidence.
-- Use an authoritative external reference only when needed to verify the spelling or identity of a specialized term. Never use it to add facts or override what the speaker said.
-- Keep awkward but grammatical wording, meaningful repetition, self-correction, hedging, transitions, modality, pronouns, tense, and voice.
-- Treat numbers, dates, proper names, products, tools, APIs, functions, labels, filenames, and code identifiers as high-risk tokens. Change them only when source repetition, uniquely identifying context, or a user-provided reference supports the correction; never normalize them merely because another form looks more familiar.
+## Markdown
 
-## Sentence, paragraph, and Markdown cleanup
+- Keep each paragraph a coherent unit of thought. Split at real changes such as setup to explanation or principle to example. Join fragments of one thought. Review walls of text and excessive one-sentence paragraphs without enforcing length or count targets.
+- Preserve existing headings. When the speaker moves to another topic or method phase and gives it its own explanation or steps, use a short source-derived `##` where it helps navigation and the requested format allows it. A single example or transition needs no heading. Reserve a new `#` for a source-provided or user-requested title.
+- When the speaker announces and enumerates several steps or parallel items, use a list if the requested format allows it. Preserve their order, detail, and qualifiers. Keep continuous reasoning in prose. Avoid decorative formatting, automatic emphasis, and labels that introduce an editorial conclusion.
+- Retain existing Markdown formatting unless the requested edit calls for a change. Keep timestamps, speaker labels, code, quotations, and metadata in place relative to the related speech. Preserve YAML frontmatter verbatim and keep a valid existing separator. Use one blank line if a new separator is needed. Stop before writing if a metadata boundary is unsafe. An unwrapped transcript begins on the first line.
 
-- Restore sentence boundaries and punctuation without creating or removing a proposition. Join fragments that belong to one sentence or thought.
-- Remove only obvious non-semantic ASR noise such as pure hesitation sounds, duplicated partial fragments, or accidental repeated words. Do not delete ordinary spoken connectors by default.
-- Make each paragraph one coherent unit of thought. Split at real boundaries between setup, explanation, example, method step, contrast, result, implication, or transition, while preserving every sentence and its order.
-- Review any paragraph whose length or internal shifts make its topic boundary hard to follow. Sentence and character counts are signals only, never output targets. Do not force one sentence per paragraph or split code, quotations, timestamps, or speaker turns destructively.
-- Preserve timestamps, speaker labels, code spans/blocks, quotations, existing headings, and useful metadata near their original positions.
-- Use headings only when clear sustained topic changes or independent method phases make navigation materially easier; do not target a heading count or create a heading for every paragraph or isolated example. Use `#` only for a source-provided or user-requested document title and `##` for useful section boundaries.
-- Build generated headings from nearby source wording; normalize them for readability but never introduce a fact, conclusion, or topic absent from the transcript. Preserve existing `#` and `##` headings, and normalize deeper headings to `##` only when needed.
-- Create ordered or unordered lists when the speaker clearly presents ordered or parallel items, such as named design patterns or explicit workflow steps. Do not manufacture tables, callouts, bolding, italics, or decorative structure.
-- Before saving, check heading coverage: if the transcript contains multiple sustained topics but the output has no headings, revisit the topic map and add the smallest useful set only when consistent with the user's request and the source format.
+## Candidate review
 
-## Output wrapper
+- **Fidelity.** Walk source and candidate in order by sentence or thought. Account for each substantive source passage and trace each edited statement, heading, and list item back to its source. Inspect gaps, changes in high-risk tokens, and any change to emphasis, correction, or logical scope. Require evidence for ASR substitutions. Revert or repair an edit if its meaning or provenance is unclear.
+- **Spoken repairs.** For “I just said X”, “by X I mean Y”, or “no, I meant Y”, locate the original X and the later repair in the candidate. Keep both in source order. For example, preserve “the right side is waiting” at its first occurrence and “by waiting I mean the write hasn't arrived” at the later clarification.
+- **Readability.** Read the candidate continuously, then compare suspect passages with the source. Check for residual ASR fragments or noise, abrupt joins, walls of text, fragmented paragraphs, and whether headings and lists make the source's actual topics and enumerations easier to find. Reflow only where it improves the reading path.
+- When checking file-based candidates with dense technical details or transcript markers, optionally run `python -X utf8 scripts/check_fidelity.py SOURCE CANDIDATE` from the Skill directory. Review flagged literal differences in context. An empty scan still requires both review passes.
 
-- Keep the original language's normal punctuation, spacing, capitalization, and paragraph conventions.
-- For an ordinary transcript, start the body on the first line unless the user or destination format requires a leading wrapper. Do not add a leading blank line merely as a house style.
-- Preserve YAML frontmatter and other required metadata verbatim. Retain the existing metadata/body separator when valid; when creating a separator for a new target, use one blank line. Do not repair malformed metadata as part of transcript polishing, and stop before writing if the body boundary is unsafe to determine.
+## Other workflows
 
-## Conditional modes
-
-- For one file or a small, related set of files, handle the work with the main agent.
-- For a large or independent multi-file batch, read [references/batch-review.md](references/batch-review.md) before delegating or coordinating independent review.
-- When the user explicitly asks to replace or synchronize an already processed copy into another Markdown target, read [references/approved-output-backfill.md](references/approved-output-backfill.md) and do not polish the body again.
-- Confirm the destination, overwrite scope, mappings, and any delegation choice when they are unclear or carry a material write risk. A clear request with a fixed non-destructive scope does not need an extra approval turn.
+- Use the main agent for one file or a small, related set. For large or independent batches, delegation, or independent batch review, read [batch review](references/batch-review.md). Confirm materially unclear delegation, mapping, or overwrite choices. A clear, non-destructive request needs no extra approval turn.
+- For explicit backfill or synchronization of an approved copy, use [approved-output backfill](references/approved-output-backfill.md) instead of editing the body again.

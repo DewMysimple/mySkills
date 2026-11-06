@@ -17,10 +17,10 @@ Read this file only when the request contains multiple transcripts, asks for del
 
 ## Safe batch execution
 
-- Process each input file as a complete unit. Never split one transcript across agents or merge content across files.
+- Assign each input file as a complete unit. The assigned worker may use the [long-transcript workflow](long-transcripts.md) within that file. Never divide its editing across agents or merge content across files.
 - Assign every input exactly once to a worker, candidate path, and reviewer. Keep candidates in an isolated task directory; workers must not write formal output targets.
 - Give workers the same immutable content rules and output mapping. Workers must not broaden the file set, delegate further, or reopen planning.
-- Compare each candidate with its source for omissions, reordering, unsupported corrections, summaries, and Markdown violations. Review paragraph structure separately from transcription fidelity.
+- Apply both candidate review passes in [SKILL.md](../SKILL.md) to each file. For a segmented file, verify its source-range coverage and joins before accepting the full candidate.
 - A long-block warning or paragraph with multiple independent moves requires an explicit review finding: confirm one coherent argument or request targeted reflow.
 - If a worker result is missing, contradictory, or reports capacity failure, reconcile the assignment state before launching a replacement. Do not reuse an unresolved assignment.
 - If an independent reviewer is unavailable, the main agent may perform the equivalent review. A failed review requires a targeted correction and another review.

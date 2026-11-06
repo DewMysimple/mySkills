@@ -3,9 +3,11 @@ type: knowledge
 status: active
 kind: module
 importance: high
-updated: 2026-09-17
+updated: 2026-11-06
 topic: video-transcript-polisher
+sources: ["video-transcript-polisher/SKILL.md", "video-transcript-polisher/references/long-transcripts.md", "video-transcript-polisher/references/batch-review.md", "video-transcript-polisher/scripts/check_fidelity.py", "video-transcript-polisher/tests/evaluation.md", "用户指令：2026-11-06 编辑转录文本并保护讲者原始内容"]
 source_logs:
+  - "[[日志/功能添加/2026-11-06-迭代视频转录保真整理]]"
   - "[[日志/工程维护/2026-09-17-收紧视频转录技能启发式规则]]"
   - "[[日志/工程维护/2026-09-07-精简视频转录技能并建立工程记忆]]"
 supersedes: null
@@ -15,30 +17,31 @@ supersedes: null
 
 ## 一句话结论
 
-这是一个保真整理 Whisper/ASR 视频课堂转写的 Skill，核心目标是提高可读性并提供适度的章节结构，但不改变原文的语言、信息顺序和含义。
+保真整理 Whisper/ASR 课堂转录，让读者更容易连续阅读、定位和复习讲者的原始内容。
 
 ## 入口与资源
 
-- 核心入口：video-transcript-polisher/SKILL.md
-- 批处理复核：video-transcript-polisher/references/batch-review.md
-- approved-output 回填：video-transcript-polisher/references/approved-output-backfill.md
-- UI 元数据：video-transcript-polisher/agents/openai.yaml
+- [核心入口](../../../video-transcript-polisher/SKILL.md)
+- [长篇分段](../../../video-transcript-polisher/references/long-transcripts.md)、[批处理复核](../../../video-transcript-polisher/references/batch-review.md)、[批准稿回填](../../../video-transcript-polisher/references/approved-output-backfill.md)
+- [界面元数据](../../../video-transcript-polisher/agents/openai.yaml)、[回归样例与评审](../../../video-transcript-polisher/tests/evaluation.md)
 
 ## 边界
 
-- 允许高置信度 ASR 词语纠错、标点恢复、段落整理和适度的 Markdown 结构。
+- 用户于 2026-11-06 确定「编辑转录文本」原则及 L1 文本修复、L2 局部润色与结构、L3 知识重写边界。入口按该边界执行，局部调整保留讲者的顺序、语气、推理、自我修正和限制条件。
 - 用户明确的标点、标题、列表和布局要求优先；结构化只在明显改善导航时执行。
 - 段落长度和标题数量只用于触发复核，不是输出目标；不要把“适度”机械化成固定数量，也不要把“稀疏”执行成“零标题”。
 - `#` 仅用于原文已有或用户明确要求的文档标题；`##` 用于清晰且持续的主题或方法阶段。
 - 语法和熟悉度只能辅助纠错；数字、专名、API、函数名和文件名等高风险词必须有原文重复、唯一上下文或用户参考支持。
 - 不负责总结、翻译、扩写、事实核查或重写成文章。
 - 默认不覆盖输入文件；小批量或强关联文件由主 Agent 处理。
+- 长篇由同一编辑者按连续源范围处理，整篇候选须通过覆盖、顺序、衔接和源文件身份复核。范围账本和候选稿保存在临时空间，全部通过后才写正式输出。采用连续源范围来检查覆盖，同时维持既有按整文件分工的约束。
+- 候选稿分别复核保真和阅读体验。可选的标准库检查器只报告可比对的字面差异，语义判断依赖逐段对照。
 
 ## 常见维护点
 
 - 共享规则放在 SKILL.md。
-- 只对批处理或回填必要的规则放到 references/，不要重新堆回入口。
-- 修改入口或参考文件后以 UTF-8 模式运行结构校验并检查相互链接。
+- 长篇分段、批处理和回填细节按场景加载。
+- 修改规则后运行结构校验，并按回归指南用合成样例检查保真、可读性和文件安全。
 
 ## 来源
 

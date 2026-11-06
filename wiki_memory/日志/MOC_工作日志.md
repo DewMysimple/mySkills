@@ -3,7 +3,7 @@ type: moc
 status: active
 kind: process
 importance: high
-updated: 2026-11-04
+updated: 2026-11-06
 topic: work-log-index
 source_logs: []
 supersedes: null
@@ -17,6 +17,7 @@ supersedes: null
 
 | 日期 | 类型 | 任务结果 | 日志 |
 | --- | --- | --- | --- |
+| 2026-11-06 | feature | completed | [迭代视频转录保真整理](功能添加/2026-11-06-迭代视频转录保真整理.md) |
 | 2026-11-04 | feature | completed | [迭代工程记忆 3.4.0](功能添加/2026-11-04-迭代工程记忆3.4.0.md) |
 | 2026-10-26 | maintenance | completed | [减少记忆重复调用与验证](工程维护/2026-10-26-减少记忆重复调用与验证.md) |
 | 2026-10-10 | maintenance | completed | [完善工程记忆校验与交接评测](工程维护/2026-10-10-完善工程记忆校验与交接评测.md) |
