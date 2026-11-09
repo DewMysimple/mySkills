@@ -3,7 +3,7 @@ type: moc
 status: active
 kind: process
 importance: high
-updated: 2026-11-06
+updated: 2026-11-09
 topic: work-log-index
 source_logs: []
 supersedes: null
@@ -17,6 +17,7 @@ supersedes: null
 
 | 日期 | 类型 | 任务结果 | 日志 |
 | --- | --- | --- | --- |
+| 2026-11-09 | bug | completed | [修补转录编辑判断精度](Bug处理/2026-11-09-修补转录编辑判断精度.md) |
 | 2026-11-06 | feature | completed | [迭代视频转录保真整理](功能添加/2026-11-06-迭代视频转录保真整理.md) |
 | 2026-11-06 | feature | completed | [按真实样本修复转录可读性](功能添加/2026-11-06-按真实样本修复转录可读性.md) |
 | 2026-11-06 | bug | completed | [解除转录重复确认门禁](Bug处理/2026-11-06-解除转录重复确认门禁.md) |

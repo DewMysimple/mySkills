@@ -114,13 +114,13 @@
     "id": "s1",
     "source": "Let's start with the art bible template. Here I write the keywords next to the goals, so I can check whether a reference fits what I'm aiming for. I put the mood boards after that. I use separate pages for the outside and inside of the space. Lighting goes on its own page because I want to compare the scenes side by side.\n\nNow let me switch to a project example, the greenhouse scene. Here I used reference photos of old irrigation equipment. The hose looked too stiff in the first pass, so I gave it more of a curve. In the last image I show the same corner with the lights on.\n",
     "good": "## Art Bible Template\n\nLet's start with the art bible template. Here I write the keywords next to the goals, so I can check whether a reference fits what I'm aiming for. I put the mood boards after that. I use separate pages for the outside and inside of the space. Lighting goes on its own page because I want to compare the scenes side by side.\n\n## Greenhouse Scene\n\nNow let me switch to a project example, the greenhouse scene. Here I used reference photos of old irrigation equipment. The hose looked too stiff in the first pass, so I gave it more of a curve. In the last image I show the same corner with the lights on.\n",
-    "bad": "Let's start with the art bible template. Here I write the keywords next to the goals, so I can check whether a reference fits what I'm aiming for. I put the mood boards after that. I use separate pages for the outside and inside of the space. Lighting goes on its own page because I want to compare the scenes side by side.\n\nNow let me switch to a project example, the greenhouse scene. Here I used reference photos of old irrigation equipment. The hose looked too stiff in the first pass, so I gave it more of a curve. In the last image I show the same corner with the lights on.\n",
+    "bad": "## Art Bible Requirements\n\nAll art bibles must have keywords, goals, mood boards, and separate lighting pages.\n\n## Successful Greenhouse Scene\n\nThe greenhouse demonstrates a successful art bible.\n",
     "fidelity": [
       "保留模板中各项与照明单页的原因，以及案例中参考物、软管修改和最后灯光图的说明。",
       "保持模板到案例的原始过渡及讲述顺序，正文内容仍完整。"
     ],
     "readability": [
-      "模板和温室案例均有独立演示，应以简洁、源内可追溯的二级标题分别定位。标签措辞可变。"
+      "模板和温室案例均有独立演示，可用简洁、源内可追溯的标题定位；只加一个标题或保留清楚的正文转场也可合格，不以标题数量或对称性判分。"
     ]
   },
   {
@@ -133,7 +133,7 @@
       "标题不能宣称一套工具更好、另一套工具没有估时功能，也不能凭指代补造界面元素。"
     ],
     "readability": [
-      "用两段源内工具名建立导航，短暂的估时与子任务示范保留在第二段内即可。"
+      "可用源内名称为两段建立导航，短暂的估时与子任务示范保留在第二段内即可；不要求标题对称或固定数量。"
     ]
   },
   {
@@ -146,7 +146,7 @@
       "为正文增加定位点时仍须保留完整叙述，勿用摘要式清单替换。"
     ],
     "readability": [
-      "挑战页、博客和聊天服务器均独立展开，用三个源内名称定位，保留每段的转场与自然段。"
+      "挑战页、博客和聊天服务器均独立展开，可用源内名称定位，保留每段的转场与自然段；不要求固定标题数量。"
     ]
   },
   {
@@ -171,6 +171,120 @@
     ],
     "readability": [
       "可将明确枚举的三步排成有序列表。连续的后续理由与条件维持自然叙述，勿把它们当作并列步骤或要点。"
+    ]
+  },
+  {
+    "id": "e10",
+    "source": "I put a simple gradients in the background. These video asset assets show what your work on. It's a typically quite used piece of software. I test the lighting first. And usually, before committing to making the final art is a good idea.\n",
+    "good": "I put simple gradients in the background. These video assets show what you're working on. It's a commonly used piece of software. I test the lighting first. And usually, doing this before committing to making the final art is a good idea.\n",
+    "bad": "I put a simple gradients in the background. These video asset assets show what your work on. It's a typically quite used piece of software. I test the lighting first. And usually, before committing to making the final art is a good idea.\n",
+    "fidelity": [
+      "保留渐变、视频资产、软件使用普遍性、先测灯光以及最终美术制作的顺序；不补造资产类别或屏幕内容。",
+      "单复数可采用上下文支持的最小修法；句尾的 this 只回指紧邻的灯光测试。"
+    ],
+    "readability": [
+      "实际处理一致性、无意义重复、动词形式、搭配和句法；可用不同的忠实措辞。"
+    ]
+  },
+  {
+    "id": "e11",
+    "source": "I use PureRef to collect reference images. Later, I put these photos on a Puref reference board.\n",
+    "good": "I use PureRef to collect reference images. Later, I put these photos on a PureRef reference board.\n",
+    "bad": "I use PureRef to collect reference images. Later, I put these photos on a Pinterest reference board.\n",
+    "fidelity": [
+      "源文已明确给出同一参考图工具的 PureRef 拼写，后文 Puref 可以据此纠正；不能替换为另一款产品。",
+      "身份仍不能唯一确认时应保留原词，不能仅凭拼写相近猜测。"
+    ],
+    "readability": [
+      "有明确证据时使同一工具的名称一致，不引入软件介绍。"
+    ]
+  },
+  {
+    "id": "e12",
+    "request": "请整理这份转录。术语表：这里的‘流马’是项目名称 LumaBoard。",
+    "source": "先打开流马，然后把两张参考图放进去。这里先不讨论其他工具。\n",
+    "good": "先打开 LumaBoard，然后把两张参考图放进去。这里先不讨论其他工具。\n",
+    "bad": "先打开 Loom，然后把两张参考图放进去。这里先不讨论其他工具。\n",
+    "fidelity": [
+      "用户明确给出本次术语映射，应采用 LumaBoard，不得按近似发音替换为其他实体。",
+      "保留两张图和不讨论其他工具的范围。"
+    ],
+    "readability": [
+      "保留讲述顺序和自然口吻，不附加术语科普。"
+    ]
+  },
+  {
+    "id": "e13",
+    "source": "The group is called Eco Bot. I heard the name once and I can't remember how they spell it. They share their sketches there.\n",
+    "good": "The group is called Eco Bot. I heard the name once, and I can't remember how they spell it. They share their sketches there.\n",
+    "bad": "The group is called EcoBot. They share their sketches there.\n",
+    "fidelity": [
+      "仅凭相似发音无法判定是否是名为 EcoBot 的实体，保留 Eco Bot 与讲者不记得拼写的陈述。",
+      "不能因熟悉某品牌而静默规范化或删除不确定性。"
+    ],
+    "readability": [
+      "适当断句；原名无唯一证据时保留不算失败。"
+    ]
+  },
+  {
+    "id": "e14",
+    "source": "I think the paid option is seven dollars a month but I can't remember. About seventy percent of the files are already uploaded.\n",
+    "good": "I think the paid option is seven dollars a month, but I can't remember. About seventy percent of the files are already uploaded.\n",
+    "bad": "The paid option costs seven dollars a month. Seventy percent of the files are already uploaded.\n",
+    "fidelity": [
+      "保留 I think、I can't remember、seven dollars a month 和约 seventy percent，不能按现价覆盖或去掉约数。"
+    ],
+    "readability": [
+      "恢复自然标点，不把不确定的说法改成确定事实。"
+    ]
+  },
+  {
+    "id": "e15",
+    "source": "I use Puref to collect images and arrange a reference board. Then I move the photos around until I can see them together.\n",
+    "good": "I use Puref to collect images and arrange a reference board. Then I move the photos around until I can see them together.\n",
+    "bad": "I use PureRef, a free tool that automatically identifies artists, to collect images and arrange a reference board. Then I move the photos around until I can see them together.\n",
+    "fidelity": [
+      "Puref 与 PureRef 的拼写和参考图用途相近，但本样例未给出足以唯一确认身份的证据，可保留 Puref；不得仅凭熟悉名称断定替换。",
+      "如果另有充分证据确认身份，可将 Puref 规范为 PureRef；核实只用于确认身份和拼写，不得向正文加入软件介绍或未经讲者陈述的功能。"
+    ],
+    "readability": [
+      "原文已完整可读，未经核实而保留原名是合格处理；本例不强制联网。"
+    ]
+  },
+  {
+    "id": "s6",
+    "source": "First, Trello. I move this card to the next column when I start the task. I can still read the note on the card.\n\nNow let's look at ClickUp. I open the lighting task to check the estimate, then return to the schedule.\n",
+    "good": "## Trello\n\nFirst, Trello. I move this card to the next column when I start the task. I can still read the note on the card.\n\n## ClickUp\n\nNow let's look at ClickUp. I open the lighting task to check the estimate, then return to the schedule.\n",
+    "bad": "## Trello: simple management\n\nI move the card to the next column.\n\n## ClickUp: advanced scheduling\n\nClickUp automatically estimates the lighting task.\n",
+    "fidelity": [
+      "依序保留两个演示及各自动作，不添加工具能力比较或屏幕中未说明的操作。"
+    ],
+    "readability": [
+      "两个软件各有持续演示，可用源内名称导航；不按标题数量打分。"
+    ]
+  },
+  {
+    "id": "s7",
+    "source": "First, ArtStation challenges. I posted the sketch and then returned to the same page with the finished image.\n\nNow, blog posts. I saved the early lighting tests in one post to compare the shadows.\n\nFinally, Discord. Someone pointed out a reflection, and I went back to look at it.\n",
+    "good": "## ArtStation challenges\n\nFirst, ArtStation challenges. I posted the sketch and then returned to the same page with the finished image.\n\n## Blog posts\n\nNow, blog posts. I saved the early lighting tests in one post to compare the shadows.\n\n## Discord\n\nFinally, Discord. Someone pointed out a reflection, and I went back to look at it.\n",
+    "bad": "## Ways to document a project\n\n- Publish a finished image.\n- Compare lighting.\n- Get feedback.\n",
+    "fidelity": [
+      "保留三种媒介、各自行为及先后顺序，不将具体叙述改写为提纲。"
+    ],
+    "readability": [
+      "三个持续展开的阶段可用忠于原文的标题定位，原过渡仍在正文。"
+    ]
+  },
+  {
+    "id": "s8",
+    "source": "Here is the art bible template. I leave a space for the references at the top, then put the palette below them.\n\nNow I'll show the art bible from my own project. I used a picture of the station as the first reference and put the colors below it.\n",
+    "good": "## Art bible template\n\nHere is the art bible template. I leave a space for the references at the top, then put the palette below them.\n\n## Art bible example\n\nNow I'll show the art bible from my own project. I used a picture of the station as the first reference and put the colors below it.\n",
+    "bad": "## Art bible best practices\n\nEvery art bible must contain references and a palette. The station is an example of a successful project.\n",
+    "fidelity": [
+      "保留模板先于个人项目实例、参考图与色板的相对位置；不能把讲者操作上升为普遍规范或评价项目。"
+    ],
+    "readability": [
+      "两个阶段均有具体内容，可各用源内词建立导航；无须为对称而普遍强制标题。"
     ]
   }
 ]
